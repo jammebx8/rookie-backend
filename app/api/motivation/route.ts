@@ -42,7 +42,7 @@ export async function POST(request: Request) {
         timeout: 120000,
       }
     );
-
+ 
     return new NextResponse(JSON.stringify(groqRes.data), {
       status: 200,
       headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },

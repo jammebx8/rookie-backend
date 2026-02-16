@@ -100,7 +100,7 @@ IMPORTANT: Respond with ONLY a single letter: A, B, C, or D. Do not include any 
       );
     } 
     else if (action === 'explain_5yr') {
-      // Action: Explain solution like explaining to a 5-year-old
+      // Action: Generate clean, easy-to-understand AI solution with LaTeX support
       if (!question_text || !solution) {
         return new NextResponse(
           JSON.stringify({ error: 'question_text and solution are required for explain_5yr action' }), 
@@ -111,20 +111,43 @@ IMPORTANT: Respond with ONLY a single letter: A, B, C, or D. Do not include any 
         );
       }
 
-      const prompt = `Explain the following JEE question solution in very simple terms that even a 5-year-old could understand. Use analogies, simple language, and avoid technical jargon.
+      const prompt = `You are an expert JEE tutor. Your task is to create a clean, easy-to-understand solution based on the provided question and solution logic.
 
 Question: ${question_text}
-Solution: ${solution}
 
-Explain this solution in simple, friendly language:`;
+Solution Logic (provided): ${solution}
+
+INSTRUCTIONS:
+1. Create a clear, step-by-step solution that is easy to understand for JEE students
+2. Use the solution logic provided above to ensure accuracy
+3. Format mathematical expressions using LaTeX notation with $ delimiters:
+   - For inline math, use: $expression$
+   - For block/display math, use: $$expression$$
+   - Example inline: The value is $x = 5$
+   - Example block: $$\\frac{d}{dx}(x^2) = 2x$$
+4. Break down complex steps into simpler sub-steps
+5. Include brief explanations for why each step is taken
+6. Use proper LaTeX formatting for:
+   - Fractions: $\\frac{numerator}{denominator}$
+   - Exponents: $x^2$, $e^{-x}$
+   - Square roots: $\\sqrt{x}$, $\\sqrt[3]{x}$
+   - Greek letters: $\\alpha$, $\\beta$, $\\theta$, etc.
+   - Calculus: $\\int$, $\\frac{d}{dx}$, $\\lim$
+   - Trigonometry: $\\sin$, $\\cos$, $\\tan$
+   - Chemistry: $H_2O$, $CO_2$
+7. Keep the solution concise but complete (aim for 10-15 lines)
+8. Make it friendly and encouraging in tone
+9. IMPORTANT: Do NOT solve the problem from scratch. Use the provided solution logic as your guide to ensure the answer is correct.
+
+Generate the solution now:`;
 
       const groqRes = await axios.post(
         'https://api.groq.com/openai/v1/chat/completions',
         {
           model,
           messages: [{ role: 'user', content: prompt }],
-          temperature: 0.7,
-          max_tokens: 800,
+          temperature: 0.5, // Balanced for clarity and creativity
+          max_tokens: 1200,
         },
         {
           headers: {
@@ -165,13 +188,19 @@ Explain this solution in simple, friendly language:`;
 Question: ${question_text}
 Solution: ${solution}
 
-Create a new MCQ and respond in this EXACT JSON format (no additional text):
+Create a new MCQ that tests the fundamental concept and respond in this EXACT JSON format (no additional text):
 {
   "question": "your question here",
   "options": ["option 1", "option 2", "option 3", "option 4"],
   "correctAnswer": "A",
   "explanation": "brief explanation of why this is the correct answer"
-}`;
+}
+
+Make sure:
+1. The question is simpler and more conceptual than the original
+2. All 4 options are plausible
+3. The correctAnswer is one of: "A", "B", "C", or "D"
+4. The explanation is clear and helps learning`;
 
       const groqRes = await axios.post(
         'https://api.groq.com/openai/v1/chat/completions',

@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import axios from 'axios';
 
 const CORS_HEADERS = {
-  'Access-Control-Allow-Origin': '*', // change to your allowed origin in production
+  'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type, Authorization',
 };
@@ -25,14 +25,82 @@ export async function POST(request: Request) {
       option_C, 
       option_D, 
       solution,
+      correct_option,
       model = 'llama-3.3-70b-versatile', 
       temperature = 0.3, 
       max_tokens = 500 
     } = body || {};
 
-    // Handle different actions
-    if (action === 'determine_answer') {
-      // Action: Determine correct answer from question and solution
+    // ==================== GENERATE SOLUTION ====================
+    if (action === 'generate_solution') {
+      if (!question_text || !option_A || !option_B || !option_C || !option_D || !solution) {
+        return new NextResponse(
+          JSON.stringify({ error: 'question_text, all options, and solution are required' }), 
+          {
+            status: 400,
+            headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+          }
+        );
+      }
+
+      const prompt = `You are an expert JEE exam tutor. Given the question, options, and the solution logic, create a clean, well-structured, and easy-to-understand solution.
+
+**Requirements:**
+1. Break down the solution into clear, numbered steps
+2. Use proper spacing and structure (NOT a paragraph)
+3. Include LaTeX formatting for mathematical expressions using $ for inline math and $$ for block equations
+4. Make each step easy to follow
+5. Add brief explanations where needed
+6. Use bullet points or numbered lists for clarity
+7. Highlight key formulas or concepts
+
+**Question:** ${question_text}
+
+**Options:**
+A) ${option_A}
+B) ${option_B}
+C) ${option_C}
+D) ${option_D}
+
+**Correct Answer:** ${correct_option || 'To be determined'}
+
+**Solution Logic:** ${solution}
+
+**Generate a clean, structured solution following the requirements above:**`;
+
+      const groqRes = await axios.post(
+        'https://api.groq.com/openai/v1/chat/completions',
+        {
+          model,
+          messages: [{ role: 'user', content: prompt }],
+          temperature: 0.5,
+          max_tokens: 2000,
+        },
+        {
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
+          },
+          timeout: 120000,
+        }
+      );
+
+      const generatedSolution = groqRes.data.choices?.[0]?.message?.content || solution;
+
+      return new NextResponse(
+        JSON.stringify({ 
+          solution: generatedSolution,
+          full_response: groqRes.data 
+        }), 
+        {
+          status: 200,
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        }
+      );
+    }
+
+    // ==================== DETERMINE ANSWER ====================
+    else if (action === 'determine_answer') {
       if (!question_text || !option_A || !option_B || !option_C || !option_D || !solution) {
         return new NextResponse(
           JSON.stringify({ error: 'question_text, all options (A, B, C, D), and solution are required' }), 
@@ -63,8 +131,8 @@ IMPORTANT: Respond with ONLY a single letter: A, B, C, or D. Do not include any 
         {
           model,
           messages: [{ role: 'user', content: prompt }],
-          temperature: 0.1, // Low temperature for deterministic answer
-          max_tokens: 10, // We only need one letter
+          temperature: 0.1,
+          max_tokens: 10,
         },
         {
           headers: {
@@ -98,9 +166,10 @@ IMPORTANT: Respond with ONLY a single letter: A, B, C, or D. Do not include any 
           headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
         }
       );
-    } 
+    }
+
+    // ==================== EXPLAIN LIKE 5 YEAR OLD ====================
     else if (action === 'explain_5yr') {
-      // Action: Generate clean, easy-to-understand AI solution with LaTeX support
       if (!question_text || !solution) {
         return new NextResponse(
           JSON.stringify({ error: 'question_text and solution are required for explain_5yr action' }), 
@@ -111,43 +180,20 @@ IMPORTANT: Respond with ONLY a single letter: A, B, C, or D. Do not include any 
         );
       }
 
-      const prompt = `You are an expert JEE tutor. Your task is to create a clean, easy-to-understand solution based on the provided question and solution logic.
+      const prompt = `Explain the following JEE question solution in very simple terms that even a 5-year-old could understand. Use analogies, simple language, and avoid technical jargon.
 
 Question: ${question_text}
+Solution: ${solution}
 
-Solution Logic (provided): ${solution}
-
-INSTRUCTIONS:
-1. Create a clear, step-by-step solution that is easy to understand for JEE students
-2. Use the solution logic provided above to ensure accuracy
-3. Format mathematical expressions using LaTeX notation with $ delimiters:
-   - For inline math, use: $expression$
-   - For block/display math, use: $$expression$$
-   - Example inline: The value is $x = 5$
-   - Example block: $$\\frac{d}{dx}(x^2) = 2x$$
-4. Break down complex steps into simpler sub-steps
-5. Include brief explanations for why each step is taken
-6. Use proper LaTeX formatting for:
-   - Fractions: $\\frac{numerator}{denominator}$
-   - Exponents: $x^2$, $e^{-x}$
-   - Square roots: $\\sqrt{x}$, $\\sqrt[3]{x}$
-   - Greek letters: $\\alpha$, $\\beta$, $\\theta$, etc.
-   - Calculus: $\\int$, $\\frac{d}{dx}$, $\\lim$
-   - Trigonometry: $\\sin$, $\\cos$, $\\tan$
-   - Chemistry: $H_2O$, $CO_2$
-7. Keep the solution concise but complete (aim for 10-15 lines)
-8. Make it friendly and encouraging in tone
-9. IMPORTANT: Do NOT solve the problem from scratch. Use the provided solution logic as your guide to ensure the answer is correct.
-
-Generate the solution now:`;
+Explain this solution in simple, friendly language:`;
 
       const groqRes = await axios.post(
         'https://api.groq.com/openai/v1/chat/completions',
         {
           model,
           messages: [{ role: 'user', content: prompt }],
-          temperature: 0.5, // Balanced for clarity and creativity
-          max_tokens: 1200,
+          temperature: 0.7,
+          max_tokens: 800,
         },
         {
           headers: {
@@ -171,8 +217,59 @@ Generate the solution now:`;
         }
       );
     }
+
+    // ==================== BETTER UNDERSTANDING ====================
+    else if (action === 'better_understanding') {
+      if (!question_text || !solution) {
+        return new NextResponse(
+          JSON.stringify({ error: 'question_text and solution are required for better_understanding action' }), 
+          {
+            status: 400,
+            headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+          }
+        );
+      }
+
+      const prompt = `Provide a simpler, more intuitive explanation of this JEE question solution. Focus on the core concept and make it easier to understand.
+
+Question: ${question_text}
+Solution: ${solution}
+
+Provide a clearer, more intuitive explanation:`;
+
+      const groqRes = await axios.post(
+        'https://api.groq.com/openai/v1/chat/completions',
+        {
+          model,
+          messages: [{ role: 'user', content: prompt }],
+          temperature: 0.7,
+          max_tokens: 800,
+        },
+        {
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
+          },
+          timeout: 120000,
+        }
+      );
+
+      const explanation = groqRes.data.choices?.[0]?.message?.content || 'Could not generate explanation.';
+
+      return new NextResponse(
+        JSON.stringify({ 
+          explanation,
+          full_response: groqRes.data 
+        }), 
+        {
+          status: 200,
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        }
+      );
+    }
+
+    // ==================== DIG DEEPER ====================
     else if (action === 'dig_deeper') {
-      // Action: Generate concept MCQ for dig deeper feature
       if (!question_text || !solution) {
         return new NextResponse(
           JSON.stringify({ error: 'question_text and solution are required for dig_deeper action' }), 
@@ -188,19 +285,13 @@ Generate the solution now:`;
 Question: ${question_text}
 Solution: ${solution}
 
-Create a new MCQ that tests the fundamental concept and respond in this EXACT JSON format (no additional text):
+Create a new MCQ and respond in this EXACT JSON format (no additional text):
 {
   "question": "your question here",
   "options": ["option 1", "option 2", "option 3", "option 4"],
   "correctAnswer": "A",
   "explanation": "brief explanation of why this is the correct answer"
-}
-
-Make sure:
-1. The question is simpler and more conceptual than the original
-2. All 4 options are plausible
-3. The correctAnswer is one of: "A", "B", "C", or "D"
-4. The explanation is clear and helps learning`;
+}`;
 
       const groqRes = await axios.post(
         'https://api.groq.com/openai/v1/chat/completions',
@@ -221,7 +312,6 @@ Make sure:
 
       const aiResponse = groqRes.data.choices?.[0]?.message?.content || '';
       
-      // Try to parse JSON from response
       const jsonMatch = aiResponse.match(/\{[\s\S]*\}/);
       if (!jsonMatch) {
         return new NextResponse(
@@ -246,8 +336,9 @@ Make sure:
         }
       );
     }
+
+    // ==================== DEFAULT (Backward Compatibility) ====================
     else {
-      // Default: motivation generation (backward compatibility)
       const { message } = body;
       
       if (!message) {

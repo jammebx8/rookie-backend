@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import axios from 'axios';
 
 const CORS_HEADERS = {
-  'Access-Control-Allow-Origin': '*', // change to your allowed origin in production
+  'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type, Authorization',
 };
@@ -17,14 +17,7 @@ export async function OPTIONS() {
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const { 
-      message, 
-      characterId,
-      isCorrect,
-      model = 'llama-3.3-70b-versatile', 
-      temperature = 0.7, 
-      max_tokens = 50 
-    } = body || {};
+    const { message, model = 'llama-3.3-70b-versatile', temperature = 0.7, max_tokens = 100 } = body || {};
 
     if (!message) {
       return new NextResponse(JSON.stringify({ error: 'message is required' }), {
@@ -33,23 +26,11 @@ export async function POST(request: Request) {
       });
     }
 
-    // Enhanced prompt based on character and result
-    let enhancedPrompt = message;
-
-    // Optional: Add context based on whether answer was correct/incorrect
-    if (typeof isCorrect === 'boolean') {
-      if (isCorrect) {
-        enhancedPrompt += ' The student got the answer CORRECT. Be encouraging and motivating.';
-      } else {
-        enhancedPrompt += ' The student got the answer WRONG. Be supportive and encouraging, help them stay motivated.';
-      }
-    }
-
     const groqRes = await axios.post(
       'https://api.groq.com/openai/v1/chat/completions',
       {
         model,
-        messages: [{ role: 'user', content: enhancedPrompt }],
+        messages: [{ role: 'user', content: message }],
         temperature,
         max_tokens,
       },

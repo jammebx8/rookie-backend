@@ -51,8 +51,10 @@ export async function POST(request: Request) {
 3. Include LaTeX formatting for mathematical expressions using $ for inline math and $$ for block equations
 4. Make each step easy to follow
 5. Add brief explanations where needed
-6. Use bullet points or numbered lists for clarity
+6. Use bullet points or numbered lists for clarity and avoid using # or * 
 7. Highlight key formulas or concepts
+8.try to keep the it short and simple
+
 
 **Question:** ${question_text}
 

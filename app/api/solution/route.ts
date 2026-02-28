@@ -79,28 +79,56 @@ export async function POST(request: Request) {
       // If a buddy is specified, generate in buddy tone; else use generic prompt
       let prompt: string;
       if (buddy_name && buddy_system_prompt) {
-        prompt = `A student just answered a JEE question. Explain the solution in your own voice and style.
+        prompt = `A student solved a JEE question. Explain the solution clearly.
 
-Question: ${question_text}
-
-Options:
-A) ${option_A}
-B) ${option_B}
-C) ${option_C}
-D) ${option_D}
-
-Correct Answer: ${correct_option || 'See solution below'}
-
-Solution Logic (use this as your factual basis — keep it accurate): 
-${solution}
-
-Requirements:
-- Stay strictly in your character voice and personality
-- Be concise: max 8 sentences total
-- Use numbered steps where helpful
-- Include LaTeX ($...$) for math expressions
-- Do NOT use markdown headers (#) or excessive asterisks
-- Accuracy is non-negotiable — use the solution logic above as ground truth`;
+        Question:
+        ${question_text}
+        
+        Options:
+        A) ${option_A}
+        B) ${option_B}
+        C) ${option_C}
+        D) ${option_D}
+        
+        Correct Answer:
+        ${correct_option}
+        
+        Solution Logic:
+        ${solution}
+        
+        FORMAT RULES:
+        - Maximum 8 steps
+        - Each step on new line
+        - Keep explanation short
+        - Use numbered steps
+        
+        LATEX RULES:
+        - Use LaTeX for ALL math
+        - Inline math with $
+        - Equations with $$
+        - Each $$ equation on its own line
+        - Leave blank line before and after equations
+        - Example:
+        
+        Step 1:
+        At max height:
+        
+        $$v_y = 0$$
+        
+        Step 2:
+        Using:
+        
+        $$v_y = u_y - gt$$
+        
+        $$0 = u_y - 10 \times 2$$
+        
+        $$u_y = 20$$
+        
+        Final Answer:
+        Option ${correct_option}
+        
+        Generate solution now.
+        `;
       } else {
         prompt = `You are an expert JEE exam tutor. Given the question, options, and the solution logic, create a clean, well-structured, and easy-to-understand solution.
 

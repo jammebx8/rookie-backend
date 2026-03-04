@@ -108,22 +108,21 @@ export async function POST(request: Request) {
       - Do NOT explain
       - Copy the text as-is
       - Preserve structure: headings, numbering, boxes, arrows, bullet points
-      - Preserve equations exactly (use plain text math: v = u + at)
+      - Preserve all units and symbols
+      - ALL mathematical equations MUST be written in valid LaTeX
+      - Use $...$ for inline math and $$...$$ for display equations
       - Preserve labels from diagrams (like +ve, -ve, origin, g downward)
-      - Write separate sections exactly as in the page
-      - If text is unclear, write [unclear]
-      - If something is crossed or boxed, still include it
-      - Include diagram descriptions in brackets like: [Diagram: sign convention showing upward +ve, downward -ve]
+      - Describe diagrams in brackets: [Diagram: ...]
+      - If any text is unclear, write [unclear]
       
-      Output format:
-      Use clean Markdown with:
-      # for main headings
-      ## for subheadings
-      - bullet points
-      1. numbered lists
-      Separate sections clearly
+      Formatting Rules:
+      - Use Markdown headings (#, ##, ###)
+      - Use numbered lists where appropriate
+      - Keep each formula on its own line
+      - Do not merge sections
+      - Do not add extra commentary
       
-      This is transcription, not interpretation.
+      This is OCR transcription, not interpretation.
       `;
 
       const groqData = await callGroqVision(images, extractPrompt);

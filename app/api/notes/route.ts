@@ -97,19 +97,34 @@ export async function POST(request: Request) {
         );
       }
 
-      const extractPrompt = `You are an expert at reading handwritten and printed notes, textbook pages, and study material.
-
-Your task: Extract ALL text from the provided image(s) of study notes. Be thorough and accurate.
-
-Instructions:
-- Extract every piece of text, including headings, subheadings, body text, equations, diagrams descriptions, and margin notes
-- Preserve the logical structure (use headings, bullet points, numbered lists as appropriate)
-- For mathematical equations, write them in plain readable form (e.g., "v² = u² + 2as")
-- If there are multiple pages/images, combine them into one coherent document
-- Do NOT add any commentary - just extract what is written
-- If something is unclear, make a best guess and mark it with [?]
-
-Return the extracted text in clean, well-structured markdown format.`;
+      const extractPrompt = `
+      You are a highly accurate OCR engine specialized in HANDWRITTEN physics notes.
+      
+      Your task is to TRANSCRIBE the image exactly as written.
+      
+      STRICT RULES:
+      - Do NOT summarize
+      - Do NOT rephrase
+      - Do NOT explain
+      - Copy the text as-is
+      - Preserve structure: headings, numbering, boxes, arrows, bullet points
+      - Preserve equations exactly (use plain text math: v = u + at)
+      - Preserve labels from diagrams (like +ve, -ve, origin, g downward)
+      - Write separate sections exactly as in the page
+      - If text is unclear, write [unclear]
+      - If something is crossed or boxed, still include it
+      - Include diagram descriptions in brackets like: [Diagram: sign convention showing upward +ve, downward -ve]
+      
+      Output format:
+      Use clean Markdown with:
+      # for main headings
+      ## for subheadings
+      - bullet points
+      1. numbered lists
+      Separate sections clearly
+      
+      This is transcription, not interpretation.
+      `;
 
       const groqData = await callGroqVision(images, extractPrompt);
       const extractedText = groqData.choices?.[0]?.message?.content || '';

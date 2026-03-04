@@ -146,19 +146,53 @@ export async function POST(request: Request) {
         );
       }
 
-      const summarizePrompt = `You are an expert JEE/NEET tutor. A student has shared their study notes. Create a concise, well-structured summary that helps the student revise quickly.
-
-Notes Content:
-${extracted_text}
-
-Create a summary with:
-1. **Topic Title** - What subject/chapter is this about?
-2. **Key Concepts** - The most important ideas (bullet points, max 8)
-3. **Important Formulas** - List key formulas clearly (write equations in plain form like: F = ma)
-4. **Quick Revision Points** - 3-5 things to remember for exams
-5. **Difficulty Level** - Easy / Medium / Hard
-
-Keep the summary focused, clear, and exam-oriented. Use emojis sparingly for visual scanning (e.g., 📌 for key points, ⚡ for formulas).`;
+      const summarizePrompt = `
+      You are a senior JEE/NEET Physics tutor creating a structured revision sheet from student notes.
+      
+      Your task:
+      Generate a clean, well-organized summary strictly following the format below.
+      
+      STRICT RULES:
+      - Do NOT copy the notes verbatim
+      - Do NOT add extra explanations
+      - Be concise and exam-oriented
+      - Use simple, clear language
+      - ALL equations must be written in valid LaTeX
+      - Use $$...$$ for display equations
+      - Do NOT use emojis
+      - Do NOT use *** or decorative markdown
+      - Do NOT invent content not present in the notes
+      - Keep formatting minimal and consistent
+      
+      Notes Content:
+      ${extracted_text}
+      
+      Return the summary in the following exact structure:
+      
+      Topic: <topic name>
+      
+      Key Concepts:
+      - point 1
+      - point 2
+      - point 3
+      - point 4
+      (maximum 8 points)
+      
+      Important Formulas:
+      - $$formula 1$$
+      - $$formula 2$$
+      - $$formula 3$$
+      (include only the most important formulas)
+      
+      Quick Revision Points:
+      - point 1
+      - point 2
+      - point 3
+      - point 4
+      (3 to 5 points)
+      
+      Difficulty Level: Easy / Medium / Hard
+      `;
 
       const groqData = await callGroqText(
         [{ role: 'user', content: summarizePrompt }],

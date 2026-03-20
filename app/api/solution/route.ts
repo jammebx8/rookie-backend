@@ -79,68 +79,41 @@ export async function POST(request: Request) {
       // If a buddy is specified, generate in buddy tone; else use generic prompt
       let prompt: string;
       if (buddy_name && buddy_system_prompt) {
-        prompt = `A student solved a JEE question. Explain the solution clearly.
+        prompt = `A student needs help understanding a JEE question. Walk them through the solution like a friendly senior student — casual, clear, and to the point. No unnecessary repetition. Get straight to the logic.
 
-        Question:
-        ${question_text}
-        
-        Options:
-        A) ${option_A}
-        B) ${option_B}
-        C) ${option_C}
-        D) ${option_D}
-        
-        Correct Answer:
-        ${correct_option}
-        
-        Solution Logic:
-        ${solution}
-        
-        FORMAT RULES:
-        - Maximum 8 steps
-        - Each step on new line
-        - Keep explanation short
-        - Use numbered steps
-        
-        LATEX RULES:
-        - Use LaTeX for ALL math
-        - Inline math with $
-        - Equations with $$
-        - Each $$ equation on its own line
-        - Leave blank line before and after equations
-        - Example:
-        
-        Step 1:
-        At max height:
-        
-        $$v_y = 0$$
-        
-        Step 2:
-        Using:
-        
-        $$v_y = u_y - gt$$
-        
-        $$0 = u_y - 10 \times 2$$
-        
-        $$u_y = 20$$
-        
-        Final Answer:
-        Option ${correct_option}
-        
-        Generate solution now.
-        `;
+Question:
+${question_text}
+
+Options:
+A) ${option_A}
+B) ${option_B}
+C) ${option_C}
+D) ${option_D}
+
+Correct Answer: ${correct_option}
+
+Solution Logic (use this as your reference — rephrase it naturally, don't copy it):
+${solution}
+
+TONE RULES:
+- Sound like a smart friend explaining it, not a textbook
+- Be concise — say what matters, skip what doesn't
+- Use natural transitions: "So", "Notice that", "The key here is", "This gives us"
+- Maximum 6 steps, each 1–2 lines only
+
+LATEX RULES:
+- Use LaTeX for ALL math
+- Inline math with $...$
+- Block equations with $$...$$ each on its own line with a blank line before and after
+
+End with:
+**Answer: Option ${correct_option}**
+
+Generate the solution now.`;
       } else {
-        prompt = `You are an expert JEE exam tutor. Given the question, options, and the solution logic, create a clean, well-structured, and easy-to-understand solution.
+        prompt = `You are a friendly JEE tutor explaining a solution to a student. Your goal is to make it feel personal, easy, and short — like a smart friend talking them through it, not a textbook.
 
-Requirements:
-1. Break down the solution into clear, numbered steps
-2. Use proper spacing and structure (NOT a paragraph)
-3. Include LaTeX formatting for mathematical expressions using $ for inline math and $$ for block equations
-4. Make each step easy to follow
-5. Add brief explanations where needed
-6. Use bullet points or numbered lists for clarity; avoid using # or *
-7. Highlight key formulas or concepts
-8. Keep it short and simple
+Use the solution logic below as your reference. Rephrase it naturally — do NOT copy it word for word.
 
 Question: ${question_text}
 
@@ -152,9 +125,18 @@ D) ${option_D}
 
 Correct Answer: ${correct_option || 'To be determined'}
 
-Solution Logic: ${solution}
+Solution Logic (reference only — rewrite naturally):
+${solution}
 
-Generate a clean, structured solution following the requirements above:`;
+RULES:
+- Max 6 short steps (1–2 lines each)
+- Use natural transitions: "So", "Notice that", "This gives us", "The key idea is"
+- Sound like a person, not a formal document
+- NO unnecessary repetition or padding
+- Use $ for inline math, $$ for block equations (each on its own line, blank line before and after)
+- End with: **Answer: Option ${correct_option || ''}**
+
+Write the solution now:`;
       }
 
       const messages = buildBuddyMessages(prompt);

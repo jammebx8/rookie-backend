@@ -182,7 +182,7 @@ export async function POST(request: Request) {
       - $$formula 1$$
       - $$formula 2$$
       - $$formula 3$$
-      (include only the most important formulas)
+     
       
       Quick Revision Points:
       - point 1

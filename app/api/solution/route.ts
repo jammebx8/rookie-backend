@@ -79,37 +79,78 @@ export async function POST(request: Request) {
       // If a buddy is specified, generate in buddy tone; else use generic prompt
       let prompt: string;
       if (buddy_name && buddy_system_prompt) {
-        prompt = `A student needs help understanding a JEE question. Walk them through the solution like a friendly senior student — casual, clear, and to the point. No unnecessary repetition. Get straight to the logic.
+        prompt = `A student needs help understanding a JEE question.
 
-Question:
-${question_text}
-
-Options:
-A) ${option_A}
-B) ${option_B}
-C) ${option_C}
-D) ${option_D}
-
-Correct Answer: ${correct_option}
-
-Solution Logic (use this as your reference — rephrase it naturally, don't copy it):
-${solution}
-
-TONE RULES:
-- Sound like a smart friend explaining it, not a textbook
-- Be concise — say what matters, skip what doesn't
-- Use natural transitions: "So", "Notice that", "The key here is", "This gives us"
-- Maximum 6 steps, each 1–2 lines only
-
-LATEX RULES:
-- Use LaTeX for ALL math
-- Inline math with $...$
-- Block equations with $$...$$ each on its own line with a blank line before and after
-
-End with:
-**Answer: Option ${correct_option}**
-
-Generate the solution now.`;
+        Your job is NOT to sound like a textbook or coaching module.
+        Your job is to sound like a real person explaining naturally.
+        
+        The user is already talking to ${buddy_name}, so fully stay in that character's personality, tone, slang, emotional style, teasing level, and teaching style.
+        
+        IMPORTANT:
+        - Do not sound robotic
+        - Do not sound overly polished
+        - Do not use textbook phrases like "Firstly", "Hence", "Therefore", "We know that"
+        - Do not overexplain
+        - Do not repeat the question
+        - Do not copy the provided solution word for word
+        - Sound like you are thinking through the question naturally with the student
+        - Every step should feel conversational
+        - Use short natural transitions like:
+          - "Dekho"
+          - "So"
+          - "Ab"
+          - "Yaha pe"
+          - "Simple hai"
+          - "Notice karo"
+          - "Bas yahi trick hai"
+          - "Key idea yeh hai"
+        - If the question is easy, acknowledge that casually
+        - If the question is tricky, mention where students usually get confused
+        - Occasionally add small emotional reactions that match the character
+        - Keep the tone dynamic, not flat
+        
+        Question:
+        ${question_text}
+        
+        Options:
+        A) ${option_A}
+        B) ${option_B}
+        C) ${option_C}
+        D) ${option_D}
+        
+        Correct Answer:
+        ${correct_option}
+        
+        Reference Solution:
+        ${solution}
+        
+        OUTPUT FORMAT:
+        - Maximum 6 steps
+        - Each step should be 1–2 short lines only
+        - Use plain conversational language
+        - Use LaTeX for all math
+        - Inline math with $...$
+        - Block equations with $$...$$
+        - Keep spacing clean
+        - End with one final line:
+          Answer: Option ${correct_option}
+        
+        GOOD STYLE EXAMPLE:
+        "Dekho, yaha pe current same rahega because series circuit hai.
+        
+        So total resistance simply add hoga:
+        
+        $$R = 2 + 3 + 5 = 10\Omega$$
+        
+        Ab Ohm's law lagao:
+        
+        $$I = \\frac{V}{R}$$
+        
+        $$I = \\frac{20}{10} = 2A$$
+        
+        Simple hai, answer Option B."
+        
+        Now generate the explanation in ${buddy_name}'s exact personality.`;
       } else {
         prompt = `You are a friendly JEE tutor explaining a solution to a student. Your goal is to make it feel personal, easy, and short — like a smart friend talking them through it, not a textbook.
 
@@ -134,7 +175,7 @@ RULES:
 - Sound like a person, not a formal document
 - NO unnecessary repetition or padding
 - Use $ for inline math, $$ for block equations (each on its own line, blank line before and after)
-- End with: **Answer: Option ${correct_option || ''}**
+- End with: Answer: Option ${correct_option || ''}
 
 Write the solution now:`;
       }

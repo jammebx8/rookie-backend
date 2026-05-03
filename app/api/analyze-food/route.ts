@@ -1,6 +1,3 @@
-// app/api/analyze-food/route.ts  (Next.js App Router)
-// NutriLens MVP — Groq vision + text analysis
-
 import { NextRequest, NextResponse } from 'next/server';
 import Groq from 'groq-sdk';
 

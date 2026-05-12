@@ -1,97 +1,107 @@
-import { Groq } from 'groq-sdk';
 import { NextRequest, NextResponse } from 'next/server';
+import Groq from 'groq-sdk';
 
-interface ChatRequest {
-  message: string;
-  conversationId: string;
-  personaId: number;
-  personaPrompt: string;
-  history: Array<{ role: 'user' | 'assistant'; content: string }>;
-}
-
-// Initialize Groq client
 const groq = new Groq({
   apiKey: process.env.GROQ_API_KEY,
 });
 
+// CORS headers for streaming responses
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+  'Access-Control-Max-Age': '86400',
+};
+
+// Handle CORS preflight requests
+export async function OPTIONS(request: NextRequest) {
+  return new NextResponse(null, {
+    status: 200,
+    headers: corsHeaders,
+  });
+}
+
 export async function POST(request: NextRequest) {
   try {
-    const body: ChatRequest = await request.json();
+    const { message, conversationId, personaId, personaPrompt, history } = await request.json();
 
-    if (!body.message) {
-      return NextResponse.json(
-        { error: 'Message is required' },
-        { status: 400 }
-      );
+    if (!message || !personaPrompt) {
+      return new NextResponse(JSON.stringify({ error: 'Missing required fields' }), {
+        status: 400,
+        headers: {
+          'Content-Type': 'application/json',
+          ...corsHeaders,
+        },
+      });
     }
 
-    if (!process.env.GROQ_API_KEY) {
-      return NextResponse.json(
-        { error: 'GROQ_API_KEY not configured' },
-        { status: 500 }
-      );
-    }
-
-    // Build messages array for API call
+    // Format messages for Groq API
     const messages = [
-      {
-        role: 'system' as const,
-        content: body.personaPrompt,
-      },
-      ...body.history.map(msg => ({
-        role: msg.role as 'user' | 'assistant',
-        content: msg.content,
-      })),
-      {
-        role: 'user' as const,
-        content: body.message,
-      },
+      ...(history || []),
+      { role: 'user' as const, content: message },
     ];
 
-    // Create streaming response
-    const encoder = new TextEncoder();
-    const customReadable = new ReadableStream({
+    // Create a ReadableStream for streaming responses
+    const readable = new ReadableStream({
       async start(controller) {
         try {
           const stream = await groq.chat.completions.create({
             model: 'llama-3.3-70b-versatile',
-            messages: messages,
+            messages: [
+              {
+                role: 'system',
+                content: personaPrompt,
+              },
+              ...messages,
+            ],
             stream: true,
             temperature: 0.7,
-            max_tokens: 2000,
+            max_tokens: 2048,
           });
 
           for await (const chunk of stream) {
             const content = chunk.choices[0]?.delta?.content || '';
             if (content) {
+              // Send content in SSE format
               controller.enqueue(
-                encoder.encode(`data: ${JSON.stringify({ content })}\n\n`)
+                new TextEncoder().encode(`data: ${JSON.stringify({ content })}\n\n`)
               );
             }
           }
 
           // Send completion signal
-          controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+          controller.enqueue(
+            new TextEncoder().encode('data: [DONE]\n\n')
+          );
+
           controller.close();
-        } catch (err) {
-          console.error('Stream error:', err);
-          controller.error(err);
+        } catch (error) {
+          console.error('Stream error:', error);
+          controller.error(error);
         }
       },
     });
 
-    return new Response(customReadable, {
+    return new NextResponse(readable, {
+      status: 200,
       headers: {
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',
         'Connection': 'keep-alive',
+        ...corsHeaders,
       },
     });
   } catch (error) {
     console.error('Chat API error:', error);
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : 'Internal server error' },
-      { status: 500 }
+    return new NextResponse(
+      JSON.stringify({ error: 'Failed to process chat request' }),
+      {
+        status: 500,
+        headers: {
+          'Content-Type': 'application/json',
+          ...corsHeaders,
+        },
+      }
     );
   }
 }

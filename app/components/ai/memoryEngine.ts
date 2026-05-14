@@ -2,7 +2,7 @@
 // Manages 3-layer memory: working (in-session), episodic (per conversation),
 // and semantic (long-term user facts extracted across all sessions)
 
-import { supabase } from '@/public/src/utils/supabase';
+import { supabase } from '../../../public/utils/supabase';
 
 export interface MemoryFact {
   id?: string;

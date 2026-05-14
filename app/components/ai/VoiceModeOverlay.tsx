@@ -34,7 +34,7 @@ const AIOrb = ({
   isListening: boolean;
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const animRef = useRef<number>();
+  const animRef = useRef<number | null>(null);
   const phaseRef = useRef(0);
 
   useEffect(() => {

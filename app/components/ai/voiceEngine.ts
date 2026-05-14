@@ -101,12 +101,13 @@ export class SpeechSynthesisEngine {
 
     // Split into natural sentences and add pauses
     const sentences = this.splitIntoSentences(cleanText);
-    this.speakSequentially(sentences, prosody, onStart, onEnd);
+    this.speakSequentially(sentences, prosody, voiceStyle, onStart, onEnd);
   }
 
   private speakSequentially(
     sentences: string[],
     prosody: ProsodyHints,
+    voiceStyle: string,
     onStart?: () => void,
     onEnd?: () => void,
     index = 0
@@ -119,7 +120,7 @@ export class SpeechSynthesisEngine {
 
     const sentence = sentences[index];
     if (!sentence.trim()) {
-      this.speakSequentially(sentences, prosody, onStart, onEnd, index + 1);
+      this.speakSequentially(sentences, prosody, voiceStyle, onStart, onEnd, index + 1);
       return;
     }
 
@@ -146,7 +147,7 @@ export class SpeechSynthesisEngine {
         : prosody.pauseBetweenSentences;
 
       setTimeout(() => {
-        this.speakSequentially(sentences, prosody, onStart, onEnd, index + 1);
+        this.speakSequentially(sentences, prosody, voiceStyle, onStart, onEnd, index + 1);
       }, pause);
     };
 

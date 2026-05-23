@@ -1,22 +1,21 @@
-// app/api/tts/route.ts  (Next.js App Router)
-//
-// Receives: JSON { text: string }
-// Returns:  audio/mpeg stream (mp3)
+// app/api/tts/route.ts
 
 import { NextRequest, NextResponse } from 'next/server';
 import { ElevenLabsClient } from '@elevenlabs/elevenlabs-js';
 
-// ─── Config ───────────────────────────────────────────────────────────────────
-// Set ELEVENLABS_VOICE_ID in .env to override the default.
-// Default: "JBFqnCBsd6RMkjVDRZzb" (George — a clear, neutral English voice)
+export const runtime = 'nodejs';
+
+// ─── Config ─────────────────────────────────────────────────────────────
+
 const VOICE_ID = '21m00Tcm4TlvDq8ikWAM';
 const MODEL_ID = 'eleven_multilingual_v2';
 const OUTPUT_FORMAT = 'mp3_44100_128';
 
+const ALLOWED_ORIGIN =
+  process.env.FRONTEND_URL ||
+  'https://friday-kappa-ten.vercel.app';
 
-
-// ─── CORS helpers ─────────────────────────────────────────────────────────────
-const ALLOWED_ORIGIN = process.env.FRONTEND_URL || '*';
+// ─── CORS ───────────────────────────────────────────────────────────────
 
 function corsHeaders() {
   return {
@@ -27,71 +26,98 @@ function corsHeaders() {
 }
 
 export async function OPTIONS() {
-  return new NextResponse(null, { status: 204, headers: corsHeaders() });
+  return new NextResponse(null, {
+    status: 204,
+    headers: corsHeaders(),
+  });
 }
 
-// ─── POST ─────────────────────────────────────────────────────────────────────
+// ─── POST ───────────────────────────────────────────────────────────────
+
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json();
-    const { text } = body;
+    // Validate API key
+    if (!process.env.ELEVENLABS_API_KEY) {
+      console.error('ELEVENLABS_API_KEY missing');
 
-    if (!text?.trim()) {
       return NextResponse.json(
-        { error: 'text is required' },
-        { status: 400, headers: corsHeaders() }
+        { error: 'Server misconfiguration' },
+        {
+          status: 500,
+          headers: corsHeaders(),
+        }
       );
     }
 
-    // Trim to 5000 chars — ElevenLabs limit per request
+    // Parse request body
+    const body = await req.json();
+    const { text } = body;
+
+    if (!text || typeof text !== 'string' || !text.trim()) {
+      return NextResponse.json(
+        { error: 'text is required' },
+        {
+          status: 400,
+          headers: corsHeaders(),
+        }
+      );
+    }
+
+    // ElevenLabs limit safety
     const safeText = text.trim().slice(0, 5000);
 
+    // Create client
     const elevenlabs = new ElevenLabsClient({
       apiKey: process.env.ELEVENLABS_API_KEY,
     });
 
-    // Returns a Node.js Readable / Web ReadableStream depending on env
-    const audioStream = await elevenlabs.textToSpeech.convert(VOICE_ID, {
-      text: safeText,
-      modelId: MODEL_ID,
-      outputFormat: OUTPUT_FORMAT,
-    });
+    console.log('Generating TTS:', safeText.slice(0, 50));
 
-    // ElevenLabs SDK returns a Web ReadableStream<Uint8Array> in edge/Node18+
-    // We pipe it straight through to the response.
-    // If it comes back as a Node Readable, convert it first.
-    let webStream: ReadableStream<Uint8Array>;
+    // Generate audio
+    const audioStream = await elevenlabs.textToSpeech.convert(
+      VOICE_ID,
+      {
+        text: safeText,
+        modelId: MODEL_ID,
+        outputFormat: OUTPUT_FORMAT,
+      }
+    );
 
-    if (audioStream instanceof ReadableStream) {
-      webStream = audioStream as ReadableStream<Uint8Array>;
-    } else {
-      // Node.js Readable → Web ReadableStream
-      webStream = new ReadableStream<Uint8Array>({
-        start(controller) {
-          (audioStream as any).on('data', (chunk: Buffer) => {
-            controller.enqueue(new Uint8Array(chunk));
-          });
-          (audioStream as any).on('end', () => controller.close());
-          (audioStream as any).on('error', (err: Error) => controller.error(err));
-        },
-      });
+    // Convert async iterable stream → buffer
+    const chunks: Buffer[] = [];
+
+    for await (const chunk of audioStream as any) {
+      chunks.push(Buffer.from(chunk));
     }
 
-    return new NextResponse(webStream, {
+    const audioBuffer = Buffer.concat(chunks);
+
+    console.log('TTS generated successfully');
+
+    // Return mp3
+    return new NextResponse(audioBuffer, {
       status: 200,
       headers: {
         ...corsHeaders(),
         'Content-Type': 'audio/mpeg',
+        'Content-Length': audioBuffer.length.toString(),
         'Cache-Control': 'no-cache',
-        'Transfer-Encoding': 'chunked',
       },
     });
 
   } catch (err: any) {
-    console.error('[/api/tts] error:', err);
+    console.error('[/api/tts] ERROR:', err);
+
     return NextResponse.json(
-      { error: err.message || 'TTS failed' },
-      { status: 500, headers: corsHeaders() }
+      {
+        error:
+          err?.message ||
+          'TTS generation failed',
+      },
+      {
+        status: 500,
+        headers: corsHeaders(),
+      }
     );
   }
 }

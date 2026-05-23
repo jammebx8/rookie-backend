@@ -99,13 +99,13 @@ export async function POST(req: NextRequest) {
     });
 
   } catch (err: any) {
-    console.error('[/api/tts] ERROR:', err);
-
+    console.error('FULL TTS ERROR:', err);
+    console.error('ERROR MESSAGE:', err?.message);
+    console.error('ERROR RESPONSE:', err?.response?.data);
+  
     return NextResponse.json(
       {
-        error:
-          err?.message ||
-          'TTS generation failed',
+        error: err?.message || 'TTS generation failed',
       },
       {
         status: 500,
@@ -113,4 +113,4 @@ export async function POST(req: NextRequest) {
       }
     );
   }
-}
+  }

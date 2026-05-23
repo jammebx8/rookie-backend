@@ -9,7 +9,7 @@ import { ElevenLabsClient } from '@elevenlabs/elevenlabs-js';
 // ─── Config ───────────────────────────────────────────────────────────────────
 // Set ELEVENLABS_VOICE_ID in .env to override the default.
 // Default: "JBFqnCBsd6RMkjVDRZzb" (George — a clear, neutral English voice)
-const VOICE_ID = process.env.ELEVENLABS_VOICE_ID || 'ftDdhfYtmfGP0tFlBYA1';
+const VOICE_ID = 'ftDdhfYtmfGP0tFlBYA1';
 const MODEL_ID = 'eleven_multilingual_v2';
 const OUTPUT_FORMAT = 'mp3_44100_128';
 

@@ -1,160 +1,116 @@
+// app/api/chat/route.ts  (Next.js App Router)
+//
+// Receives: JSON { message, conversationId, personaId, personaName,
+//                  personaSystemPrompt, history, userName }
+// Returns:  SSE stream of { type: 'content', content: string } chunks
+//           terminated with "data: [DONE]\n\n"
+
 import { NextRequest, NextResponse } from 'next/server';
 import Groq from 'groq-sdk';
-import { assembleSystemPrompt, buildWorkingMemory } from '../../components/ai/contextAssembler';
-import { detectUserMood, computeAIEmotion, EmotionProfile } from '../../components/ai/emotionEngine';
-import { extractAndStoreFacts, saveEpisodicSummary } from '../../components/ai/memoryEngine';
 
-const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+// ─── CORS helpers ─────────────────────────────────────────────────────────────
+const ALLOWED_ORIGIN = process.env.FRONTEND_URL || '*';
 
-const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-  'Access-Control-Max-Age': '86400',
-};
-
-export async function OPTIONS() {
-  return new NextResponse(null, { status: 200, headers: corsHeaders });
+function corsHeaders() {
+  return {
+    'Access-Control-Allow-Origin': ALLOWED_ORIGIN,
+    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+  };
 }
 
-export async function POST(request: NextRequest) {
+export async function OPTIONS() {
+  return new NextResponse(null, { status: 204, headers: corsHeaders() });
+}
+
+// ─── POST ─────────────────────────────────────────────────────────────────────
+export async function POST(req: NextRequest) {
   try {
+    const body = await req.json();
     const {
       message,
-      conversationId,
-      personaId,
       personaName,
-      personaBasePrompt,
-      personaVoiceStyle,
-      history,
-      userId,
+      personaSystemPrompt,
+      history = [],
       userName,
-      isVoiceMode,
-      // Emotion state passed from client (persisted across turns)
-      emotionHistory,
-      currentEmotion,
-    } = await request.json();
+    } = body;
 
-    if (!message || !personaBasePrompt) {
-      return new NextResponse(JSON.stringify({ error: 'Missing required fields' }), {
-        status: 400,
-        headers: { 'Content-Type': 'application/json', ...corsHeaders },
-      });
+    if (!message?.trim()) {
+      return NextResponse.json(
+        { error: 'message is required' },
+        { status: 400, headers: corsHeaders() }
+      );
     }
 
-    // ── 1. DETECT USER MOOD ────────────────────────────────────────────────
-    const { mood: userMood, detectedEmotion, intensity } = detectUserMood(message);
+    // Build the system prompt
+    const userContext = userName ? `The user's name is ${userName}. ` : '';
+    const systemPrompt = `${userContext}${personaSystemPrompt || `You are ${personaName || 'an AI assistant'}. Be helpful and engaging.`}`;
 
-    // ── 2. COMPUTE AI EMOTIONAL STATE ─────────────────────────────────────
-    const emotionProfile: EmotionProfile = computeAIEmotion(
-      detectedEmotion,
-      personaId,
-      emotionHistory || [],
-      currentEmotion || 'neutral'
-    );
-
-    // ── 3. ASSEMBLE ENRICHED SYSTEM PROMPT ────────────────────────────────
-    let systemPrompt = personaBasePrompt;
-    if (userId) {
-      systemPrompt = await assembleSystemPrompt({
-        userId,
-        personaName: personaName || 'Assistant',
-        personaBasePrompt,
-        personaVoiceStyle: personaVoiceStyle || 'warm',
-        emotionProfile,
-        userMood,
-        userName,
-        isVoiceMode: !!isVoiceMode,
-      });
-    } else {
-      // No user ID — still inject emotion but skip memory
-      const { buildEmotionPromptLayer } = await import('../../components/ai/emotionEngine');
-      systemPrompt = personaBasePrompt + '\n\n' + buildEmotionPromptLayer(emotionProfile, userMood, personaName || 'Assistant');
-    }
-
-    // ── 4. BUILD WORKING MEMORY (smart truncation) ─────────────────────────
-    const workingMemory = buildWorkingMemory(history || [], 14);
-
-    const messages = [
-      ...workingMemory,
-      { role: 'user' as const, content: message },
+    // Build message array: system + recent history + current message
+    const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
+      { role: 'system', content: systemPrompt },
+      // history already filtered to last 12 on the client
+      ...history.map((m: { role: string; content: string }) => ({
+        role: m.role as 'user' | 'assistant',
+        content: m.content,
+      })),
+      { role: 'user', content: message.trim() },
     ];
 
-    // ── 5. STREAM RESPONSE ─────────────────────────────────────────────────
-    let fullResponse = '';
+    const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
-    const readable = new ReadableStream({
+    // Stream from Groq
+    const stream = await groq.chat.completions.create({
+      model: 'llama-3.3-70b-versatile',
+      messages,
+      temperature: 0.8,
+      max_completion_tokens: 1024,
+      top_p: 1,
+      stream: true,
+      stop: null,
+    });
+
+    // Pipe Groq stream → SSE response
+    const encoder = new TextEncoder();
+
+    const readableStream = new ReadableStream({
       async start(controller) {
         try {
-          // Send emotion metadata first (client uses this to update its state)
-          controller.enqueue(
-            new TextEncoder().encode(
-              `data: ${JSON.stringify({
-                type: 'meta',
-                emotionProfile,
-                userMood,
-              })}\n\n`
-            )
-          );
-
-          const stream = await groq.chat.completions.create({
-            model: 'llama-3.3-70b-versatile',
-            messages: [{ role: 'system', content: systemPrompt }, ...messages],
-            stream: true,
-            temperature: 0.75,
-            max_tokens: 1024,
-            // Voice mode: shorter, punchier responses
-            ...(isVoiceMode ? { max_tokens: 300 } : {}),
-          });
-
           for await (const chunk of stream) {
-            const content = chunk.choices[0]?.delta?.content || '';
+            const content = chunk.choices[0]?.delta?.content;
             if (content) {
-              fullResponse += content;
-              controller.enqueue(
-                new TextEncoder().encode(`data: ${JSON.stringify({ type: 'content', content })}\n\n`)
-              );
+              const sseChunk = `data: ${JSON.stringify({ type: 'content', content })}\n\n`;
+              controller.enqueue(encoder.encode(sseChunk));
             }
           }
-
-          controller.enqueue(new TextEncoder().encode('data: [DONE]\n\n'));
+          controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+        } catch (err) {
+          console.error('[/api/chat] stream error:', err);
+          controller.enqueue(
+            encoder.encode(`data: ${JSON.stringify({ type: 'error', error: 'Stream interrupted' })}\n\n`)
+          );
+        } finally {
           controller.close();
-
-          // ── 6. POST-RESPONSE: MEMORY EXTRACTION (async, non-blocking) ──
-          if (userId && fullResponse) {
-            Promise.all([
-              extractAndStoreFacts(userId, message, fullResponse),
-              conversationId ? saveEpisodicSummary(
-                conversationId,
-                userId,
-                [...(history || []), { role: 'user', content: message }, { role: 'assistant', content: fullResponse }],
-                userMood
-              ) : Promise.resolve(),
-            ]).catch(err => console.error('Memory save error:', err));
-          }
-
-        } catch (error) {
-          console.error('Stream error:', error);
-          controller.error(error);
         }
       },
     });
 
-    return new NextResponse(readable, {
+    return new NextResponse(readableStream, {
       status: 200,
       headers: {
+        ...corsHeaders(),
         'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive',
-        ...corsHeaders,
+        'Cache-Control': 'no-cache, no-transform',
+        'X-Accel-Buffering': 'no',   // disables Nginx buffering on Vercel edge
+        Connection: 'keep-alive',
       },
     });
 
-  } catch (error) {
-    console.error('Chat API error:', error);
-    return new NextResponse(
-      JSON.stringify({ error: 'Failed to process chat request' }),
-      { status: 500, headers: { 'Content-Type': 'application/json', ...corsHeaders } }
+  } catch (err: any) {
+    console.error('[/api/chat] error:', err);
+    return NextResponse.json(
+      { error: err.message || 'Chat failed' },
+      { status: 500, headers: corsHeaders() }
     );
   }
 }

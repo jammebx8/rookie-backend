@@ -1,77 +1,95 @@
-import { NextRequest, NextResponse } from 'next/server';
+// app/api/tts/route.ts  (Next.js App Router)
+//
+// Receives: JSON { text: string }
+// Returns:  audio/mpeg stream (mp3)
 
-interface TTSRequest {
-  text: string;
-  voiceStyle?: string;
+import { NextRequest, NextResponse } from 'next/server';
+import { ElevenLabsClient } from '@elevenlabs/elevenlabs-js';
+
+// ─── Config ───────────────────────────────────────────────────────────────────
+// Set ELEVENLABS_VOICE_ID in .env to override the default.
+// Default: "JBFqnCBsd6RMkjVDRZzb" (George — a clear, neutral English voice)
+const VOICE_ID = process.env.ELEVENLABS_VOICE_ID || 'JBFqnCBsd6RMkjVDRZzb';
+const MODEL_ID = 'eleven_multilingual_v2';
+const OUTPUT_FORMAT = 'mp3_44100_128';
+
+// ─── CORS helpers ─────────────────────────────────────────────────────────────
+const ALLOWED_ORIGIN = process.env.FRONTEND_URL || '*';
+
+function corsHeaders() {
+  return {
+    'Access-Control-Allow-Origin': ALLOWED_ORIGIN,
+    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+  };
 }
 
-export async function POST(request: NextRequest) {
+export async function OPTIONS() {
+  return new NextResponse(null, { status: 204, headers: corsHeaders() });
+}
+
+// ─── POST ─────────────────────────────────────────────────────────────────────
+export async function POST(req: NextRequest) {
   try {
-    const body: TTSRequest = await request.json();
+    const body = await req.json();
+    const { text } = body;
 
-    if (!body.text) {
+    if (!text?.trim()) {
       return NextResponse.json(
-        { error: 'Text is required' },
-        { status: 400 }
+        { error: 'text is required' },
+        { status: 400, headers: corsHeaders() }
       );
     }
 
-    if (!process.env.CANOPY_API_KEY) {
-      return NextResponse.json(
-        { error: 'CANOPY_API_KEY not configured' },
-        { status: 500 }
-      );
-    }
+    // Trim to 5000 chars — ElevenLabs limit per request
+    const safeText = text.trim().slice(0, 5000);
 
-    // Map voice styles to Canopy Labs voice IDs
-    const voiceMap: Record<string, string> = {
-      confident: '1', // Nova - confident voice
-      warm: '2', // Aria - warm voice
-      calm: '3', // Kaito - calm voice
-      energetic: '4', // Zara - energetic voice
-    };
-
-    const voiceId = voiceMap[body.voiceStyle || 'confident'] || '1';
-
-    // Call Canopy Labs Orpheus API
-    const response = await fetch('https://api.canopylabs.ai/v1/audio/speech', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${process.env.CANOPY_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        text: body.text,
-        voice_id: voiceId,
-        model: 'orpheus-v1-english',
-        speed: 1.0,
-        language: 'en',
-      }),
+    const elevenlabs = new ElevenLabsClient({
+      apiKey: process.env.ELEVENLABS_API_KEY,
     });
 
-    if (!response.ok) {
-      const error = await response.text();
-      console.error('Canopy API error:', error);
-      return NextResponse.json(
-        { error: 'Failed to generate speech' },
-        { status: response.status }
-      );
+    // Returns a Node.js Readable / Web ReadableStream depending on env
+    const audioStream = await elevenlabs.textToSpeech.convert(VOICE_ID, {
+      text: safeText,
+      modelId: MODEL_ID,
+      outputFormat: OUTPUT_FORMAT,
+    });
+
+    // ElevenLabs SDK returns a Web ReadableStream<Uint8Array> in edge/Node18+
+    // We pipe it straight through to the response.
+    // If it comes back as a Node Readable, convert it first.
+    let webStream: ReadableStream<Uint8Array>;
+
+    if (audioStream instanceof ReadableStream) {
+      webStream = audioStream as ReadableStream<Uint8Array>;
+    } else {
+      // Node.js Readable → Web ReadableStream
+      webStream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          (audioStream as any).on('data', (chunk: Buffer) => {
+            controller.enqueue(new Uint8Array(chunk));
+          });
+          (audioStream as any).on('end', () => controller.close());
+          (audioStream as any).on('error', (err: Error) => controller.error(err));
+        },
+      });
     }
 
-    // Get audio data
-    const audioBuffer = await response.arrayBuffer();
-
-    return new Response(audioBuffer, {
+    return new NextResponse(webStream, {
+      status: 200,
       headers: {
+        ...corsHeaders(),
         'Content-Type': 'audio/mpeg',
         'Cache-Control': 'no-cache',
+        'Transfer-Encoding': 'chunked',
       },
     });
-  } catch (error) {
-    console.error('TTS API error:', error);
+
+  } catch (err: any) {
+    console.error('[/api/tts] error:', err);
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : 'Internal server error' },
-      { status: 500 }
+      { error: err.message || 'TTS failed' },
+      { status: 500, headers: corsHeaders() }
     );
   }
 }

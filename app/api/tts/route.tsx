@@ -1,21 +1,26 @@
 // app/api/tts/route.ts
 
 import { NextRequest, NextResponse } from 'next/server';
-import { ElevenLabsClient } from '@elevenlabs/elevenlabs-js';
+import Groq from 'groq-sdk';
 
 export const runtime = 'nodejs';
 
 // ─── Config ─────────────────────────────────────────────────────────────
 
-const VOICE_ID = '21m00Tcm4TlvDq8ikWAM';
-const MODEL_ID = 'eleven_multilingual_v2';
-const OUTPUT_FORMAT = 'mp3_44100_128';
+const MODEL_ID = 'playai-tts';
+const VOICE = 'Autumn';
 
 const ALLOWED_ORIGIN =
   process.env.FRONTEND_URL ||
   'https://friday-kappa-ten.vercel.app';
 
-// ─── CORS ───────────────────────────────────────────────────────────────
+// ─── Groq Client ───────────────────────────────────────────────────────
+
+const groq = new Groq({
+  apiKey: process.env.GROQ_API_KEY,
+});
+
+// ─── CORS ──────────────────────────────────────────────────────────────
 
 function corsHeaders() {
   return {
@@ -32,13 +37,13 @@ export async function OPTIONS() {
   });
 }
 
-// ─── POST ───────────────────────────────────────────────────────────────
+// ─── POST ──────────────────────────────────────────────────────────────
 
 export async function POST(req: NextRequest) {
   try {
     // Validate API key
-    if (!process.env.ELEVENLABS_API_KEY) {
-      console.error('ELEVENLABS_API_KEY missing');
+    if (!process.env.GROQ_API_KEY) {
+      console.error('GROQ_API_KEY missing');
 
       return NextResponse.json(
         { error: 'Server misconfiguration' },
@@ -63,43 +68,31 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // ElevenLabs limit safety
+    // Safety limit
     const safeText = text.trim().slice(0, 5000);
-
-    // Create client
-    const elevenlabs = new ElevenLabsClient({
-      apiKey: process.env.ELEVENLABS_API_KEY,
-    });
 
     console.log('Generating TTS:', safeText.slice(0, 50));
 
-    // Generate audio
-    const audioStream = await elevenlabs.textToSpeech.convert(
-      VOICE_ID,
-      {
-        text: safeText,
-        modelId: MODEL_ID,
-        outputFormat: OUTPUT_FORMAT,
-      }
-    );
+    // Generate speech
+    const speechResponse = await groq.audio.speech.create({
+      model: MODEL_ID,
+      voice: VOICE,
+      response_format: 'wav',
+      input: safeText,
+    });
 
-    // Convert async iterable stream → buffer
-    const chunks: Buffer[] = [];
-
-    for await (const chunk of audioStream as any) {
-      chunks.push(Buffer.from(chunk));
-    }
-
-    const audioBuffer = Buffer.concat(chunks);
+    // Convert response → buffer
+    const arrayBuffer = await speechResponse.arrayBuffer();
+    const audioBuffer = Buffer.from(arrayBuffer);
 
     console.log('TTS generated successfully');
 
-    // Return mp3
+    // Return audio
     return new NextResponse(audioBuffer, {
       status: 200,
       headers: {
         ...corsHeaders(),
-        'Content-Type': 'audio/mpeg',
+        'Content-Type': 'audio/wav',
         'Content-Length': audioBuffer.length.toString(),
         'Cache-Control': 'no-cache',
       },

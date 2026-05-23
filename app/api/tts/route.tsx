@@ -7,8 +7,8 @@ export const runtime = 'nodejs';
 
 // ─── Config ─────────────────────────────────────────────────────────────
 
-const MODEL_ID = 'playai-tts';
-const VOICE = 'Autumn';
+const MODEL_ID = 'canopylabs/orpheus-v1-english';
+const VOICE = 'autumn';
 
 const ALLOWED_ORIGIN =
   process.env.FRONTEND_URL ||

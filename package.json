@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@elevenlabs/elevenlabs-js": "^2.49.1",
+    "@openrouter/sdk": "^0.12.35",
     "@supabase/auth-helpers-nextjs": "^0.15.0",
     "axios": "^1.13.2",
     "framer-motion": "^12.38.0",

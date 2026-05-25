@@ -6,6 +6,7 @@
 //           terminated with "data: [DONE]\n\n"
 
 import { NextRequest, NextResponse } from 'next/server';
+import { OpenRouter } from '@openrouter/sdk';
 
 // ─── CORS helpers ─────────────────────────────────────────────────────────────
 const ALLOWED_ORIGIN = process.env.FRONTEND_URL || '*';
@@ -21,6 +22,11 @@ function corsHeaders() {
 export async function OPTIONS() {
   return new NextResponse(null, { status: 204, headers: corsHeaders() });
 }
+
+// ─── OpenRouter client ────────────────────────────────────────────────────────
+const openrouter = new OpenRouter({
+  apiKey: process.env.OPENROUTER_API_KEY!,
+});
 
 // ─── POST ─────────────────────────────────────────────────────────────────────
 export async function POST(req: NextRequest) {
@@ -43,7 +49,10 @@ export async function POST(req: NextRequest) {
 
     // Build the system prompt
     const userContext = userName ? `The user's name is ${userName}. ` : '';
-    const systemPrompt = `${userContext}${personaSystemPrompt || `You are ${personaName || 'an AI assistant'}. Be helpful and engaging.`}`;
+    const systemPrompt = `${userContext}${
+      personaSystemPrompt ||
+      `You are ${personaName || 'an AI assistant'}. Be helpful and engaging.`
+    }`;
 
     // Build message array
     const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
@@ -55,74 +64,27 @@ export async function POST(req: NextRequest) {
       { role: 'user', content: message.trim() },
     ];
 
-    // ─── OpenRouter fetch (streaming) ─────────────────────────────────────────
-    const openRouterRes = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
-        'Content-Type': 'application/json',
-        'HTTP-Referer': process.env.FRONTEND_URL || 'http://localhost:3000',
-        'X-Title': personaName || 'AI Companion',
-      },
-      body: JSON.stringify({
-        model: 'cognitivecomputations/dolphin-mistral-24b-venice-edition:free',
-        messages,
-        temperature: 0.9,
-        max_tokens: 1024,
-        top_p: 1,
-        stream: true,
-      }),
+    // ─── Stream from OpenRouter SDK ───────────────────────────────────────────
+    const stream = await openrouter.chat.send({
+      model: 'cognitivecomputations/dolphin-mistral-24b-venice-edition:free',
+      messages,
+      temperature: 0.9,
+      max_tokens: 1024,
+      top_p: 1,
+      stream: true,
     });
 
-    if (!openRouterRes.ok) {
-      const errText = await openRouterRes.text();
-      console.error('[/api/chat] OpenRouter error:', errText);
-      return NextResponse.json(
-        { error: `OpenRouter error: ${openRouterRes.status}` },
-        { status: 500, headers: corsHeaders() }
-      );
-    }
-
-    // ─── Pipe SSE from OpenRouter → client ────────────────────────────────────
+    // ─── Pipe SDK stream → SSE response ───────────────────────────────────────
     const encoder = new TextEncoder();
-    const decoder = new TextDecoder();
 
     const readableStream = new ReadableStream({
       async start(controller) {
-        const reader = openRouterRes.body!.getReader();
-        let buffer = '';
-
         try {
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            // Keep last (possibly incomplete) line in buffer
-            buffer = lines.pop() ?? '';
-
-            for (const line of lines) {
-              const trimmed = line.trim();
-              if (!trimmed || trimmed === 'data: [DONE]') {
-                if (trimmed === 'data: [DONE]') {
-                  controller.enqueue(encoder.encode('data: [DONE]\n\n'));
-                }
-                continue;
-              }
-
-              if (trimmed.startsWith('data: ')) {
-                try {
-                  const json = JSON.parse(trimmed.slice(6));
-                  const content = json.choices?.[0]?.delta?.content;
-                  if (content) {
-                    const sseChunk = `data: ${JSON.stringify({ type: 'content', content })}\n\n`;
-                    controller.enqueue(encoder.encode(sseChunk));
-                  }
-                } catch {
-                  // skip malformed chunks
-                }
-              }
+          for await (const chunk of stream) {
+            const content = chunk.choices[0]?.delta?.content;
+            if (content) {
+              const sseChunk = `data: ${JSON.stringify({ type: 'content', content })}\n\n`;
+              controller.enqueue(encoder.encode(sseChunk));
             }
           }
           controller.enqueue(encoder.encode('data: [DONE]\n\n'));
@@ -134,7 +96,6 @@ export async function POST(req: NextRequest) {
             )
           );
         } finally {
-          reader.releaseLock();
           controller.close();
         }
       },

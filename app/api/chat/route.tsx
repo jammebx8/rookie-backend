@@ -6,7 +6,7 @@
 //           terminated with "data: [DONE]\n\n"
 
 import { NextRequest, NextResponse } from 'next/server';
-import { OpenRouter } from '@openrouter/sdk';
+import Groq from 'groq-sdk';
 
 // ─── CORS helpers ─────────────────────────────────────────────────────────────
 const ALLOWED_ORIGIN = process.env.FRONTEND_URL || '*';
@@ -22,11 +22,6 @@ function corsHeaders() {
 export async function OPTIONS() {
   return new NextResponse(null, { status: 204, headers: corsHeaders() });
 }
-
-// ─── OpenRouter client ────────────────────────────────────────────────────────
-const openrouter = new OpenRouter({
-  apiKey: process.env.OPENROUTER_API_KEY!,
-});
 
 // ─── POST ─────────────────────────────────────────────────────────────────────
 export async function POST(req: NextRequest) {
@@ -49,14 +44,12 @@ export async function POST(req: NextRequest) {
 
     // Build the system prompt
     const userContext = userName ? `The user's name is ${userName}. ` : '';
-    const systemPrompt = `${userContext}${
-      personaSystemPrompt ||
-      `You are ${personaName || 'an AI assistant'}. Be helpful and engaging.`
-    }`;
+    const systemPrompt = `${userContext}${personaSystemPrompt || `You are ${personaName || 'an AI assistant'}. Be helpful and engaging.`}`;
 
-    // Build message array
+    // Build message array: system + recent history + current message
     const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
       { role: 'system', content: systemPrompt },
+      // history already filtered to last 12 on the client
       ...history.map((m: { role: string; content: string }) => ({
         role: m.role as 'user' | 'assistant',
         content: m.content,
@@ -64,19 +57,20 @@ export async function POST(req: NextRequest) {
       { role: 'user', content: message.trim() },
     ];
 
-    // ─── Stream from OpenRouter SDK ───────────────────────────────────────────
-    const stream = await openrouter.chat.send({
-      chatRequest: {
-        model: 'cognitivecomputations/dolphin-mistral-24b-venice-edition:free',
-        messages,
-        temperature: 0.9,
-        maxTokens: 1024,
-        topP: 1,
-        stream: true,
-      },
+    const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+
+    // Stream from Groq
+    const stream = await groq.chat.completions.create({
+      model: 'llama-3.3-70b-versatile',
+      messages,
+      temperature: 0.8,
+      max_completion_tokens: 1024,
+      top_p: 1,
+      stream: true,
+      stop: null,
     });
 
-    // ─── Pipe SDK stream → SSE response ───────────────────────────────────────
+    // Pipe Groq stream → SSE response
     const encoder = new TextEncoder();
 
     const readableStream = new ReadableStream({
@@ -93,9 +87,7 @@ export async function POST(req: NextRequest) {
         } catch (err) {
           console.error('[/api/chat] stream error:', err);
           controller.enqueue(
-            encoder.encode(
-              `data: ${JSON.stringify({ type: 'error', error: 'Stream interrupted' })}\n\n`
-            )
+            encoder.encode(`data: ${JSON.stringify({ type: 'error', error: 'Stream interrupted' })}\n\n`)
           );
         } finally {
           controller.close();
@@ -109,7 +101,7 @@ export async function POST(req: NextRequest) {
         ...corsHeaders(),
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache, no-transform',
-        'X-Accel-Buffering': 'no',
+        'X-Accel-Buffering': 'no',   // disables Nginx buffering on Vercel edge
         Connection: 'keep-alive',
       },
     });

@@ -66,12 +66,14 @@ export async function POST(req: NextRequest) {
 
     // ─── Stream from OpenRouter SDK ───────────────────────────────────────────
     const stream = await openrouter.chat.send({
-      model: 'cognitivecomputations/dolphin-mistral-24b-venice-edition:free',
-      messages,
-      temperature: 0.9,
-      max_tokens: 1024,
-      top_p: 1,
-      stream: true,
+      chatRequest: {
+        model: 'cognitivecomputations/dolphin-mistral-24b-venice-edition:free',
+        messages,
+        temperature: 0.9,
+        maxTokens: 1024,
+        topP: 1,
+        stream: true,
+      },
     });
 
     // ─── Pipe SDK stream → SSE response ───────────────────────────────────────

@@ -6,7 +6,6 @@
 //           terminated with "data: [DONE]\n\n"
 
 import { NextRequest, NextResponse } from 'next/server';
-import Groq from 'groq-sdk';
 
 // ─── CORS helpers ─────────────────────────────────────────────────────────────
 const ALLOWED_ORIGIN = process.env.FRONTEND_URL || '*';
@@ -46,10 +45,9 @@ export async function POST(req: NextRequest) {
     const userContext = userName ? `The user's name is ${userName}. ` : '';
     const systemPrompt = `${userContext}${personaSystemPrompt || `You are ${personaName || 'an AI assistant'}. Be helpful and engaging.`}`;
 
-    // Build message array: system + recent history + current message
+    // Build message array
     const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
       { role: 'system', content: systemPrompt },
-      // history already filtered to last 12 on the client
       ...history.map((m: { role: string; content: string }) => ({
         role: m.role as 'user' | 'assistant',
         content: m.content,
@@ -57,39 +55,86 @@ export async function POST(req: NextRequest) {
       { role: 'user', content: message.trim() },
     ];
 
-    const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
-
-    // Stream from Groq
-    const stream = await groq.chat.completions.create({
-      model: 'llama-3.3-70b-versatile',
-      messages,
-      temperature: 0.8,
-      max_completion_tokens: 1024,
-      top_p: 1,
-      stream: true,
-      stop: null,
+    // ─── OpenRouter fetch (streaming) ─────────────────────────────────────────
+    const openRouterRes = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
+        'Content-Type': 'application/json',
+        'HTTP-Referer': process.env.FRONTEND_URL || 'http://localhost:3000',
+        'X-Title': personaName || 'AI Companion',
+      },
+      body: JSON.stringify({
+        model: 'cognitivecomputations/dolphin-mistral-24b-venice-edition:free',
+        messages,
+        temperature: 0.9,
+        max_tokens: 1024,
+        top_p: 1,
+        stream: true,
+      }),
     });
 
-    // Pipe Groq stream → SSE response
+    if (!openRouterRes.ok) {
+      const errText = await openRouterRes.text();
+      console.error('[/api/chat] OpenRouter error:', errText);
+      return NextResponse.json(
+        { error: `OpenRouter error: ${openRouterRes.status}` },
+        { status: 500, headers: corsHeaders() }
+      );
+    }
+
+    // ─── Pipe SSE from OpenRouter → client ────────────────────────────────────
     const encoder = new TextEncoder();
+    const decoder = new TextDecoder();
 
     const readableStream = new ReadableStream({
       async start(controller) {
+        const reader = openRouterRes.body!.getReader();
+        let buffer = '';
+
         try {
-          for await (const chunk of stream) {
-            const content = chunk.choices[0]?.delta?.content;
-            if (content) {
-              const sseChunk = `data: ${JSON.stringify({ type: 'content', content })}\n\n`;
-              controller.enqueue(encoder.encode(sseChunk));
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            // Keep last (possibly incomplete) line in buffer
+            buffer = lines.pop() ?? '';
+
+            for (const line of lines) {
+              const trimmed = line.trim();
+              if (!trimmed || trimmed === 'data: [DONE]') {
+                if (trimmed === 'data: [DONE]') {
+                  controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+                }
+                continue;
+              }
+
+              if (trimmed.startsWith('data: ')) {
+                try {
+                  const json = JSON.parse(trimmed.slice(6));
+                  const content = json.choices?.[0]?.delta?.content;
+                  if (content) {
+                    const sseChunk = `data: ${JSON.stringify({ type: 'content', content })}\n\n`;
+                    controller.enqueue(encoder.encode(sseChunk));
+                  }
+                } catch {
+                  // skip malformed chunks
+                }
+              }
             }
           }
           controller.enqueue(encoder.encode('data: [DONE]\n\n'));
         } catch (err) {
           console.error('[/api/chat] stream error:', err);
           controller.enqueue(
-            encoder.encode(`data: ${JSON.stringify({ type: 'error', error: 'Stream interrupted' })}\n\n`)
+            encoder.encode(
+              `data: ${JSON.stringify({ type: 'error', error: 'Stream interrupted' })}\n\n`
+            )
           );
         } finally {
+          reader.releaseLock();
           controller.close();
         }
       },
@@ -101,7 +146,7 @@ export async function POST(req: NextRequest) {
         ...corsHeaders(),
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache, no-transform',
-        'X-Accel-Buffering': 'no',   // disables Nginx buffering on Vercel edge
+        'X-Accel-Buffering': 'no',
         Connection: 'keep-alive',
       },
     });

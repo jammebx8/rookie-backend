@@ -3,6 +3,19 @@ import Groq from 'groq-sdk';
 
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
+// ── CORS ────────────────────────────────────────────────────────────────────
+const CORS_HEADERS = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type',
+};
+
+// Handle browser preflight OPTIONS request
+export async function OPTIONS() {
+  return new NextResponse(null, { status: 200, headers: CORS_HEADERS });
+}
+// ────────────────────────────────────────────────────────────────────────────
+
 const SYSTEM_PROMPT = `You are NutriLens AI, a food nutrition expert. Analyze the food provided and return ONLY valid JSON — no markdown, no preamble.
 
 JSON structure (required, all fields):
@@ -32,7 +45,10 @@ export async function POST(req: NextRequest) {
     const { imageBase64, manualPrompt, userContext, scanMode = 'photo' } = body;
 
     if (!imageBase64 && !manualPrompt) {
-      return NextResponse.json({ error: 'Provide imageBase64 or manualPrompt' }, { status: 400 });
+      return NextResponse.json(
+        { error: 'Provide imageBase64 or manualPrompt' },
+        { status: 400, headers: CORS_HEADERS }
+      );
     }
 
     const h = parseInt(userContext?.time_of_day?.split(':')[0] ?? '12');
@@ -91,12 +107,21 @@ ${manualPrompt ? `\nUser says: "${manualPrompt}"` : ''}
     try {
       parsed = JSON.parse(cleaned);
     } catch {
-      return NextResponse.json({ error: 'AI returned invalid JSON', raw }, { status: 422 });
+      return NextResponse.json(
+        { error: 'AI returned invalid JSON', raw },
+        { status: 422, headers: CORS_HEADERS }
+      );
     }
 
-    return NextResponse.json({ success: true, data: parsed });
+    return NextResponse.json(
+      { success: true, data: parsed },
+      { headers: CORS_HEADERS }
+    );
   } catch (err: any) {
     console.error('[analyze-food]', err?.message);
-    return NextResponse.json({ error: err?.message ?? 'Server error' }, { status: 500 });
+    return NextResponse.json(
+      { error: err?.message ?? 'Server error' },
+      { status: 500, headers: CORS_HEADERS }
+    );
   }
 }

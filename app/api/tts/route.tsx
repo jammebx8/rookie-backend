@@ -5,7 +5,7 @@ import { NextRequest, NextResponse } from 'next/server';
 export const runtime = 'nodejs';
 
 // "Bella" — expressive, natural female voice. Swap for any ElevenLabs voice_id you like.
-const VOICE_ID = process.env.ELEVENLABS_VOICE_ID || 'EXAVITQu4vr4xnSDxMaL';
+const VOICE_ID = process.env.ELEVENLABS_VOICE_ID || 'ftDdhfYtmfGP0tFlBYA1';
 
 // eleven_multilingual_v2 gives the most natural, emotionally expressive delivery.
 // If you have access to eleven_v3 (alpha), that one is even more emotive.

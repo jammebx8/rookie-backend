@@ -1,21 +1,24 @@
 // app/api/tts/route.ts
 
 import { NextRequest, NextResponse } from 'next/server';
+import Groq from 'groq-sdk';
 
 export const runtime = 'nodejs';
 
-// "Bella" — expressive, natural female voice. Swap for any ElevenLabs voice_id you like.
-const VOICE_ID = process.env.ELEVENLABS_VOICE_ID || '21m00Tcm4TlvDq8ikWAM'; 
+// ─── Config ─────────────────────────────────────────────────────────────
 
-// eleven_multilingual_v2 gives the most natural, emotionally expressive delivery.
-// If you have access to eleven_v3 (alpha), that one is even more emotive.
-const MODEL_ID = process.env.ELEVENLABS_MODEL_ID || 'eleven_multilingual_v2';
+const MODEL_ID = 'canopylabs/orpheus-v1-english';
+const VOICE = 'autumn';
 
 const ALLOWED_ORIGIN =
   process.env.FRONTEND_URL ||
   'https://friday-kappa-ten.vercel.app';
 
-const ELEVENLABS_TTS_URL = `https://api.elevenlabs.io/v1/text-to-speech/${VOICE_ID}`;
+// ─── Groq Client ───────────────────────────────────────────────────────
+
+const groq = new Groq({
+  apiKey: process.env.GROQ_API_KEY,
+});
 
 // ─── CORS ──────────────────────────────────────────────────────────────
 
@@ -39,8 +42,8 @@ export async function OPTIONS() {
 export async function POST(req: NextRequest) {
   try {
     // Validate API key
-    if (!process.env.ELEVENLABS_API_KEY) {
-      console.error('ELEVENLABS_API_KEY missing');
+    if (!process.env.GROQ_API_KEY) {
+      console.error('GROQ_API_KEY missing');
 
       return NextResponse.json(
         { error: 'Server misconfiguration' },
@@ -70,43 +73,13 @@ export async function POST(req: NextRequest) {
 
     console.log('Generating TTS:', safeText.slice(0, 50));
 
-    // Generate speech via ElevenLabs
-    const speechResponse = await fetch(
-      `${ELEVENLABS_TTS_URL}?output_format=mp3_44100_128`,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'xi-api-key': process.env.ELEVENLABS_API_KEY,
-          Accept: 'audio/mpeg',
-        },
-        body: JSON.stringify({
-          text: safeText,
-          model_id: MODEL_ID,
-          voice_settings: {
-            // Lower stability + higher style = more emotional, expressive range.
-            // Push stability up a bit if the voice starts sounding unstable/glitchy.
-            stability: 0.45,
-            similarity_boost: 0.85,
-            style: 0.65,
-            use_speaker_boost: true,
-          },
-        }),
-      }
-    );
-
-    if (!speechResponse.ok) {
-      const errText = await speechResponse.text().catch(() => '');
-      console.error('ElevenLabs error:', speechResponse.status, errText);
-
-      return NextResponse.json(
-        { error: `TTS provider error (${speechResponse.status})` },
-        {
-          status: 502,
-          headers: corsHeaders(),
-        }
-      );
-    }
+    // Generate speech
+    const speechResponse = await groq.audio.speech.create({
+      model: MODEL_ID,
+      voice: VOICE,
+      response_format: 'wav',
+      input: safeText,
+    });
 
     // Convert response → buffer
     const arrayBuffer = await speechResponse.arrayBuffer();
@@ -119,7 +92,7 @@ export async function POST(req: NextRequest) {
       status: 200,
       headers: {
         ...corsHeaders(),
-        'Content-Type': 'audio/mpeg',
+        'Content-Type': 'audio/wav',
         'Content-Length': audioBuffer.length.toString(),
         'Cache-Control': 'no-cache',
       },
@@ -128,7 +101,8 @@ export async function POST(req: NextRequest) {
   } catch (err: any) {
     console.error('FULL TTS ERROR:', err);
     console.error('ERROR MESSAGE:', err?.message);
-
+    console.error('ERROR RESPONSE:', err?.response?.data);
+  
     return NextResponse.json(
       {
         error: err?.message || 'TTS generation failed',
@@ -139,4 +113,4 @@ export async function POST(req: NextRequest) {
       }
     );
   }
-}
+  }

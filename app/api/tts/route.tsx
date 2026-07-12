@@ -4,8 +4,6 @@ import { NextRequest, NextResponse } from 'next/server';
 
 export const runtime = 'nodejs';
 
-// ─── Config ─────────────────────────────────────────────────────────────
-
 // "Bella" — expressive, natural female voice. Swap for any ElevenLabs voice_id you like.
 const VOICE_ID = process.env.ELEVENLABS_VOICE_ID || 'EXAVITQu4vr4xnSDxMaL';
 

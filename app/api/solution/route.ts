@@ -190,7 +190,7 @@ Write the solution now:`;
       );
     }
 
-  
+    // ════════════════════════════════════════════════════════════════════════
     // DETERMINE ANSWER
     // ════════════════════════════════════════════════════════════════════════
     else if (action === 'determine_answer') {
@@ -213,12 +213,24 @@ Option D: ${option_D}
 Solution: ${solution}
 
 Based on the solution provided, which option (A, B, C, or D) is the correct answer?
+You may reason briefly first, but the VERY LAST line of your reply must be exactly:
+FINAL_ANSWER: <letter>
+where <letter> is a single character, A, B, C, or D, and nothing else on that line.`;
 
-IMPORTANT: Respond with ONLY a single letter: A, B, C, or D. Do not include any explanation, punctuation, or additional text.`;
-
-      const groqData = await callGroq([{ role: 'user', content: prompt }], { temperature: 0.1, max_tokens: 10 });
+      // model = gpt-oss-120b is a reasoning model: it spends tokens on an
+      // internal chain-of-thought before writing anything visible, and
+      // those reasoning tokens count against max_tokens. A budget as small
+      // as 10 gets cut off mid-thought — content comes back empty, no
+      // letter is found, and this action fails on every single call. Give
+      // it enough room to finish reasoning AND write the final line.
+      const groqData = await callGroq([{ role: 'user', content: prompt }], { temperature: 0.1, max_tokens: 400 });
       const aiResponse = groqData.choices?.[0]?.message?.content || '';
-      const correctAnswer = aiResponse.trim().toUpperCase().match(/[ABCD]/)?.[0] || null;
+      // Prefer the anchored "FINAL_ANSWER: X" line (robust even if the
+      // reasoning text above it mentions other letters); fall back to the
+      // last bare A/B/C/D in the response if the model didn't follow format.
+      const finalLineMatch = aiResponse.match(/FINAL_ANSWER:\s*([ABCD])/i);
+      const lastLetterMatch = aiResponse.toUpperCase().match(/[ABCD](?!.*[ABCD])/s);
+      const correctAnswer = finalLineMatch?.[1]?.toUpperCase() || lastLetterMatch?.[0] || null;
 
       if (!correctAnswer) {
         return new NextResponse(

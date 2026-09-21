@@ -119,7 +119,7 @@ export async function POST(request: Request) {
         D) ${option_D}
         
         Correct Answer:
-        ${correct_option}
+        ${correct_option || 'Not confirmed yet — work it out yourself from the reference solution below, do not guess.'}
         
         Reference Solution:
         ${solution}
@@ -132,8 +132,8 @@ export async function POST(request: Request) {
         - Inline math with $...$
         - Block equations with $$...$$
         - Keep spacing clean
-        - End with one final line:
-          Answer: Option ${correct_option}
+        - End with one final line, using the correct letter (work it out yourself if it wasn't given above — never leave it blank):
+          Answer: Option ${correct_option || '<A/B/C/D>'}
         
         GOOD STYLE EXAMPLE:
         "Dekho, yaha pe current same rahega because series circuit hai.

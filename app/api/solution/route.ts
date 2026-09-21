@@ -229,7 +229,8 @@ where <letter> is a single character, A, B, C, or D, and nothing else on that li
       // reasoning text above it mentions other letters); fall back to the
       // last bare A/B/C/D in the response if the model didn't follow format.
       const finalLineMatch = aiResponse.match(/FINAL_ANSWER:\s*([ABCD])/i);
-      const lastLetterMatch = aiResponse.toUpperCase().match(/[ABCD](?!.*[ABCD])/s);
+      const matches = aiResponse.toUpperCase().match(/[ABCD]/g);
+      const lastLetterMatch = matches ? [matches[matches.length - 1]] : null;
       const correctAnswer = finalLineMatch?.[1]?.toUpperCase() || lastLetterMatch?.[0] || null;
 
       if (!correctAnswer) {

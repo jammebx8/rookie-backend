@@ -36,9 +36,14 @@ app = FastAPI(title="Rookie Backend", version="1.0.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_methods=["POST", "OPTIONS"],
-    allow_headers=["Content-Type", "Authorization"],
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
+
+
+@app.get("/")
+async def health():
+    return {"status": "ok", "service": "Rookie Backend"}
 
 
 # ── Request / Response schemas ─────────────────────────────────────────────
@@ -239,11 +244,16 @@ LATEX ACCURACY
 - Fix Greek letters and mathematical symbols.
 - Fix units and mathematical notation when necessary.
 - Do not preserve malformed backticks or broken mathematical markup.
-- Use $...$ for inline mathematics.
-- Use $$...$$ for display equations.
-- Put display equations on their own lines.
+- ONLY use these two delimiter styles — nothing else:
+  - Inline math:   $...$       (single dollar signs, no space after opening $)
+  - Display math:  $$...$$     (double dollar signs, on their own line)
+- NEVER use \[...\] or \(...\) — these are not supported by the renderer.
+- NEVER use \begin{equation}, \begin{align}, or any LaTeX environment blocks.
+- Every mathematical symbol, variable, fraction, subscript, superscript, Greek letter, or formula MUST be inside $ or $$ delimiters.
+- Do not write bare math like mgsinθ or a_s outside of $ delimiters.
+- Put display equations ($$...$$) on their own line with a blank line before and after.
 - Do not mention that the reference solution contained broken LaTeX.
-- The final response must contain clean mathematical notation even when the source does not.
+- The final response must contain clean, correctly delimited mathematical notation.
 
 NATURAL LANGUAGE
 - Sound conversational and human.
@@ -338,6 +348,8 @@ Now explain the question naturally in {req.buddy_name}'s exact personality.
         if req.buddy_name and req.buddy_system_prompt:
             user_prompt = f"""Explain the following JEE question solution in very simple terms, as if talking to a 10-year-old. Use analogies, simple language, and avoid technical jargon. Stay in your character voice.
 
+MATH FORMATTING: Use only $...$ for inline math and $$...$$ for display math. Never use \\[...\\] or \\(...\\).
+
 Question: {req.question_text}
 Correct Answer: {req.correct_option}
 Solution: {req.solution}
@@ -345,6 +357,8 @@ Solution: {req.solution}
 Explain simply:"""
         else:
             user_prompt = f"""Explain the following JEE question solution in very simple terms that even a 5-year-old could understand. Use analogies, simple language, and avoid technical jargon.
+
+MATH FORMATTING: Use only $...$ for inline math and $$...$$ for display math. Never use \\[...\\] or \\(...\\).
 
 Question: {req.question_text}
 Correct Answer: {req.correct_option}
@@ -367,6 +381,8 @@ Explain this solution in simple, friendly language:"""
         if req.buddy_name and req.buddy_system_prompt:
             user_prompt = f"""Give a simpler, more intuitive explanation of this JEE question solution. Focus on the core concept. Stay in your character voice and keep it concise.
 
+MATH FORMATTING: Use only $...$ for inline math and $$...$$ for display math. Never use \\[...\\] or \\(...\\).
+
 Question: {req.question_text}
 Correct Answer: {req.correct_option}
 Solution: {req.solution}
@@ -374,6 +390,8 @@ Solution: {req.solution}
 Simpler explanation:"""
         else:
             user_prompt = f"""Provide a simpler, more intuitive explanation of this JEE question solution. Focus on the core concept and make it easier to understand.
+
+MATH FORMATTING: Use only $...$ for inline math and $$...$$ for display math. Never use \\[...\\] or \\(...\\).
 
 Question: {req.question_text}
 Correct Answer: {req.correct_option}

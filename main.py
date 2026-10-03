@@ -248,7 +248,7 @@ LATEX ACCURACY
   - Inline math:   $...$       (single dollar signs, no space after opening $)
   - Display math:  $$...$$     (double dollar signs, on their own line)
 - NEVER use \[...\] or \(...\) — these are not supported by the renderer.
-- NEVER use \begin{equation}, \begin{align}, or any LaTeX environment blocks.
+- NEVER use \begin{{equation}}, \begin{{align}}, or any LaTeX environment blocks.
 - Every mathematical symbol, variable, fraction, subscript, superscript, Greek letter, or formula MUST be inside $ or $$ delimiters.
 - Do not write bare math like mgsinθ or a_s outside of $ delimiters.
 - Put display equations ($$...$$) on their own line with a blank line before and after.

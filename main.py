@@ -8,12 +8,12 @@ All four actions are supported:
   - better_understanding
   - dig_deeper
 
+
 The `determine_answer` action has been removed — `correct_option` now
 arrives directly from the database.
 """
 
 from __future__ import annotations
-
 import os
 import json
 import re

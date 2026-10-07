@@ -40,6 +40,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ── Payment routes ─────────────────────────────────────────────────────────────
+from payment import router as payment_router   # noqa: E402
+app.include_router(payment_router)
+
 
 @app.get("/")
 async def health():

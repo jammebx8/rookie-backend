@@ -34,6 +34,7 @@ GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 GROQ_TTS_URL = "https://api.groq.com/openai/v1/audio/speech"
 GROQ_TRANSCRIBE_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 DEEPGRAM_URL = "https://api.deepgram.com/v1/listen?model=nova-3&language=en&smart_format=true"
+DEEPGRAM_TTS_URL = "https://api.deepgram.com/v1/speak?model=aura-asteria-en&encoding=linear16&container=wav"
 
 VISION_MODEL = "qwen/qwen3.8-27b"
 REASONING_MODEL = "openai/gpt-oss-120b"
@@ -521,6 +522,66 @@ def clean_for_speech(text: str) -> str:
     return s
 
 
+async def synthesize_speech(text: str, voice_name: str = "autumn") -> tuple[str, str]:
+    """
+    Synthesizes speech:
+    1. First tries Groq Cloud with canopylabs/orpheus-v1-english.
+    2. If Groq fails (e.g. model terms not yet accepted on org key, or rate limit),
+       seamlessly falls back to Deepgram Aura TTS (aura-asteria-en).
+    Returns (base64_audio, mime_type).
+    """
+    clean_text = clean_for_speech(text)
+    if not clean_text:
+        clean_text = "Let me explain that for you."
+
+    valid_groq_voice = voice_name if voice_name in ["autumn", "diana", "hannah", "austin", "daniel", "troy"] else "autumn"
+
+    # 1. Attempt Groq Cloud TTS
+    if GROQ_API_KEY:
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                tts_resp = await client.post(
+                    GROQ_TTS_URL,
+                    headers={
+                        "Content-Type": "application/json",
+                        "Authorization": f"Bearer {GROQ_API_KEY}",
+                    },
+                    json={
+                        "model": TTS_MODEL,
+                        "input": clean_text[:1000],
+                        "voice": valid_groq_voice,
+                        "response_format": "wav",
+                    },
+                )
+            if tts_resp.status_code == 200 and len(tts_resp.content) > 100:
+                return base64.b64encode(tts_resp.content).decode("utf-8"), "audio/wav"
+            else:
+                print(f"[TTS] Groq TTS responded with status {tts_resp.status_code}: {tts_resp.text[:150]}")
+        except Exception as e:
+            print(f"[TTS] Groq TTS exception: {e}")
+
+    # 2. Fallback to Deepgram Aura TTS
+    if DEEPGRAM_API_KEY:
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                dg_resp = await client.post(
+                    DEEPGRAM_TTS_URL,
+                    headers={
+                        "Content-Type": "application/json",
+                        "Authorization": f"Token {DEEPGRAM_API_KEY}",
+                    },
+                    json={"text": clean_text[:1500]},
+                )
+            if dg_resp.status_code == 200 and len(dg_resp.content) > 100:
+                return base64.b64encode(dg_resp.content).decode("utf-8"), "audio/wav"
+            else:
+                print(f"[TTS] Deepgram TTS responded with status {dg_resp.status_code}: {dg_resp.text[:150]}")
+        except Exception as e:
+            print(f"[TTS] Deepgram TTS exception: {e}")
+
+    return "", "audio/wav"
+
+
 class SnapAnalyzeRequest(BaseModel):
     image_base64: str
 
@@ -873,35 +934,14 @@ async def snap_voice_doubt(req: SnapVoiceDoubtRequest):
         gpt_data = gpt_resp.json()
         tutor_text = gpt_data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
 
-        # Clean text for speech synthesis
-        speech_text = clean_for_speech(tutor_text)
-        if not speech_text:
-            speech_text = "Let me explain that for you."
-
-        # Synthesize audio with canopylabs/orpheus-v1-english
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            tts_resp = await client.post(
-                GROQ_TTS_URL,
-                headers={
-                    "Content-Type": "application/json",
-                    "Authorization": f"Bearer {GROQ_API_KEY}",
-                },
-                json={
-                    "model": TTS_MODEL,
-                    "input": speech_text[:1000],
-                    "voice": voice_name,
-                    "response_format": "wav",
-                },
-            )
-
-        audio_b64 = ""
-        if tts_resp.status_code == 200:
-            audio_b64 = base64.b64encode(tts_resp.content).decode("utf-8")
+        # Synthesize audio with Groq / Deepgram fallback
+        audio_b64, audio_mime = await synthesize_speech(tutor_text, voice_name)
 
         return {
             "text": tutor_text,
-            "speech_text": speech_text,
+            "speech_text": clean_for_speech(tutor_text),
             "audio_base64": audio_b64,
+            "audio_mime": audio_mime,
             "voice": voice_name,
         }
 
@@ -914,35 +954,18 @@ async def snap_voice_doubt(req: SnapVoiceDoubtRequest):
 @app.post("/snap-solve/tts")
 async def snap_tts(req: SnapTTSRequest):
     """
-    Direct TTS generation using canopylabs/orpheus-v1-english on Groq.
+    Direct TTS generation with Groq / Deepgram fallback.
     """
     if not req.text:
         raise HTTPException(status_code=400, detail="text is required")
 
-    voice_name = req.voice if req.voice in ["autumn", "diana", "hannah", "austin", "daniel", "troy"] else "autumn"
-    speech_text = clean_for_speech(req.text)
-
     try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            tts_resp = await client.post(
-                GROQ_TTS_URL,
-                headers={
-                    "Content-Type": "application/json",
-                    "Authorization": f"Bearer {GROQ_API_KEY}",
-                },
-                json={
-                    "model": TTS_MODEL,
-                    "input": speech_text[:1000],
-                    "voice": voice_name,
-                    "response_format": "wav",
-                },
-            )
+        voice_name = req.voice if req.voice in ["autumn", "diana", "hannah", "austin", "daniel", "troy"] else "autumn"
+        audio_b64, audio_mime = await synthesize_speech(req.text, voice_name)
+        if not audio_b64:
+            raise HTTPException(status_code=500, detail="Speech synthesis failed on all providers")
 
-        if tts_resp.status_code != 200:
-            raise HTTPException(status_code=tts_resp.status_code, detail=f"TTS Error: {tts_resp.text}")
-
-        audio_b64 = base64.b64encode(tts_resp.content).decode("utf-8")
-        return {"audio_base64": audio_b64, "voice": voice_name}
+        return {"audio_base64": audio_b64, "audio_mime": audio_mime, "voice": voice_name}
 
     except HTTPException:
         raise

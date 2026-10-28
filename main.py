@@ -731,27 +731,61 @@ EXPLANATION APPROACH
 - First understand the actual mathematical/scientific reasoning yourself.
 - Identify the core concept or trick behind the question.
 - Explain the reasoning naturally from that core idea.
+- Do NOT mechanically explain A, B, C, D one after another.
+- Only discuss wrong options when they reveal a useful misconception or important trap.
 - Do not repeat the question unnecessarily.
+- Do not restate obvious information just to make the answer longer.
 - Prefer intuition and reasoning over formal textbook definitions.
-- If there is a shortcut or elegant simplification, show it naturally.
+- If there is a shortcut, show it naturally.
+- If there is no shortcut or trick, do not invent one.
 - Keep the explanation concise but complete enough that the student understands WHY the answer is correct.
-- If the question involves steps, structure them cleanly as:
-  ### Step 1
-  ...
-  ### Step 2
-  ...
+- Do not overexplain easy questions.
+- Do not under-explain questions that require reasoning.
+- Do not copy the reference solution's structure.
+- Do not copy the reference solution's wording.
+- Do not follow the reference solution's sentence structure.
+- The reference solution is ONLY a source of information and reasoning.
+- Rewrite everything naturally in your own words.
+
+REFERENCE SOLUTION HANDLING
+The reference solution may be:
+- overly verbose
+- repetitive
+- poorly written
+- textbook-like
+- grammatically incorrect
+- formatted badly
+- mathematically formatted incorrectly
+- missing useful intuition
+
+Do not blindly follow it.
+
+Use it to understand the intended solution and verify the reasoning, then create a better explanation for the student.
+
+If the reference solution contains an obvious factual or logical inconsistency with the provided correct answer, carefully reason from the question and correct answer instead of blindly copying the inconsistent explanation.
 
 LATEX ACCURACY
 - Use clean, valid LaTeX for every mathematical expression.
-- Fix missing braces, broken fractions, superscripts, subscripts, Greek letters, and mathematical symbols.
+- The reference solution may contain broken, malformed, incomplete, or incorrectly formatted LaTeX.
+- NEVER copy broken LaTeX into your output.
+- If the reference contains broken LaTeX, infer the intended mathematical meaning from context and write the correct LaTeX yourself.
+- Fix missing braces.
+- Fix incorrect LaTeX commands.
+- Fix broken fractions.
+- Fix incorrect superscripts and subscripts.
+- Fix Greek letters and mathematical symbols.
+- Fix units and mathematical notation when necessary.
+- Do not preserve malformed backticks or broken mathematical markup.
 - ONLY use these two delimiter styles — nothing else:
   - Inline math:   $...$       (single dollar signs, no space after opening $)
-  - Display math:  $$...$$     (double dollar signs, on their own line with a blank line before and after)
-- NEVER use \\[...\\] or \\(...\\) — these are not supported by the renderer.
-- NEVER use \\begin{{equation}}, \\begin{{align}}, or any LaTeX environment blocks.
+  - Display math:  $$...$$     (double dollar signs, on their own line)
+- NEVER use \[...\] or \(...\) — these are not supported by the renderer.
+- NEVER use \begin{{equation}}, \begin{{align}}, or any LaTeX environment blocks.
 - Every mathematical symbol, variable, fraction, subscript, superscript, Greek letter, or formula MUST be inside $ or $$ delimiters.
 - Do not write bare math like mgsinθ or a_s outside of $ delimiters.
 - Put display equations ($$...$$) on their own line with a blank line before and after.
+- Do not mention that the reference solution contained broken LaTeX.
+- The final response must contain clean, correctly delimited mathematical notation.
 
 OUTPUT FORMAT
 - Maximum 4 to 6 concise steps or paragraphs.

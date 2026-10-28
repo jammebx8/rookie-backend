@@ -740,6 +740,7 @@ EXPLANATION APPROACH
 - If there is no shortcut or trick, do not invent one.
 - Keep the explanation concise but complete enough that the student understands WHY the answer is correct.
 - Do not overexplain easy questions.
+- Do not use ### in explanation to represent steps.
 - Do not under-explain questions that require reasoning.
 - Do not copy the reference solution's structure.
 - Do not copy the reference solution's wording.

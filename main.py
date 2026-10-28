@@ -17,6 +17,7 @@ from __future__ import annotations
 import os
 import json
 import re
+import base64
 from typing import Any, Optional
 
 import httpx
@@ -27,9 +28,16 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-GROQ_API_KEY: str = os.environ["GROQ_API_KEY"]
+GROQ_API_KEY: str = os.environ.get("GROQ_API_KEY")
+DEEPGRAM_API_KEY: str = os.environ.get("DEEPGRAM_API_KEY", "745155e2a953bd317278905804c8d3f50b2eee83")
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
+GROQ_TTS_URL = "https://api.groq.com/openai/v1/audio/speech"
+DEEPGRAM_URL = "https://api.deepgram.com/v1/listen?model=nova-3&language=en&smart_format=true"
+
+VISION_MODEL = "qwen/qwen3.8-27b"
+REASONING_MODEL = "openai/gpt-oss-120b"
 DEFAULT_MODEL = "openai/gpt-oss-120b"
+TTS_MODEL = "canopylabs/orpheus-v1-english"
 
 app = FastAPI(title="Rookie Backend", version="1.0.0")
 
@@ -454,3 +462,458 @@ Create a new MCQ and respond in this EXACT JSON format (no additional text, no m
             status_code=400,
             detail=f"Unknown action '{req.action}'. Valid actions: generate_solution, explain_5yr, better_understanding, dig_deeper",
         )
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# SNAP & SOLVE + VOICE AI TUTOR ENDPOINTS
+# ══════════════════════════════════════════════════════════════════════════
+
+def clean_for_speech(text: str) -> str:
+    """Converts LaTeX and markdown math into natural spoken words for TTS."""
+    s = text
+    # Replace common LaTeX math commands with natural spoken phrases
+    s = re.sub(r'\\frac\{([^}]+)\}\{([^}]+)\}', r'\1 over \2', s)
+    s = re.sub(r'\\sqrt\{([^}]+)\}', r'square root of \1', s)
+    s = re.sub(r'\\sqrt\[(\d+)\]\{([^}]+)\}', r'\1th root of \2', s)
+    s = re.sub(r'\\boxed\{([^}]+)\}', r'\1', s)
+    s = re.sub(r'\\text\{([^}]+)\}', r'\1', s)
+    s = re.sub(r'\\mathrm\{([^}]+)\}', r'\1', s)
+    s = re.sub(r'\\mathbf\{([^}]+)\}', r'\1', s)
+    
+    # Symbols & operators
+    s = s.replace(r'\times', ' times ')
+    s = s.replace(r'\pm', ' plus or minus ')
+    s = s.replace(r'\approx', ' approximately ')
+    s = s.replace(r'\neq', ' not equal to ')
+    s = s.replace(r'\leq', ' less than or equal to ')
+    s = s.replace(r'\le', ' less than or equal to ')
+    s = s.replace(r'\geq', ' greater than or equal to ')
+    s = s.replace(r'\ge', ' greater than or equal to ')
+    s = s.replace(r'\rightarrow', ' approaches ')
+    s = s.replace(r'\Rightarrow', ' implies ')
+    s = s.replace(r'\infty', ' infinity ')
+    s = s.replace(r'\Delta', ' delta ')
+    s = s.replace(r'\theta', ' theta ')
+    s = s.replace(r'\pi', ' pi ')
+    s = s.replace(r'\alpha', ' alpha ')
+    s = s.replace(r'\beta', ' beta ')
+    s = s.replace(r'\gamma', ' gamma ')
+    s = s.replace(r'\lambda', ' lambda ')
+    s = s.replace(r'\mu', ' micro ')
+    s = s.replace(r'\sigma', ' sigma ')
+    s = s.replace(r'\omega', ' omega ')
+    
+    # Powers and subscripts
+    s = re.sub(r'\^2\b', ' squared', s)
+    s = re.sub(r'\^3\b', ' cubed', s)
+    s = re.sub(r'\^\{?([0-9a-zA-Z]+)\}?', r' to the power of \1', s)
+    s = re.sub(r'_\{?([0-9a-zA-Z]+)\}?', r' sub \1', s)
+    
+    # Strip delimiters and markdown
+    s = re.sub(r'\$\$|\$', ' ', s)
+    s = re.sub(r'\\\[|\\\]|\\\(|\\\)', ' ', s)
+    s = re.sub(r'[\*_#`~]', ' ', s)
+    s = re.sub(r'\\[a-zA-Z]+', ' ', s)
+    s = re.sub(r'[{}]', ' ', s)
+    s = re.sub(r'\s+', ' ', s).strip()
+    return s
+
+
+class SnapAnalyzeRequest(BaseModel):
+    image_base64: str
+
+
+class SnapTranscribeRequest(BaseModel):
+    audio_base64: str
+    mime_type: Optional[str] = "audio/webm"
+
+
+class SnapVoiceDoubtRequest(BaseModel):
+    question_text: str
+    solution: str
+    user_doubt: str
+    history: Optional[list[dict[str, str]]] = Field(default_factory=list)
+    voice: Optional[str] = "autumn"
+
+
+class SnapTTSRequest(BaseModel):
+    text: str
+    voice: Optional[str] = "autumn"
+
+
+@app.post("/snap-solve/analyze")
+async def snap_analyze(req: SnapAnalyzeRequest):
+    """
+    1. Inspects image with qwen/qwen3.8-27b on Groq.
+    2. Verifies whether the image contains schoolwork/academic doubt.
+       If not, returns is_schoolwork: False with error.
+    3. If valid, extracts problem text and calls openai/gpt-oss-120b for
+       a complete step-by-step solution rendered with LaTeX math.
+    """
+    if not req.image_base64:
+        raise HTTPException(status_code=400, detail="image_base64 is required")
+
+    # Format data URI
+    img_b64 = req.image_base64.strip()
+    if not img_b64.startswith("data:"):
+        img_b64 = f"data:image/jpeg;base64,{img_b64}"
+
+    # Step 1: Vision analysis with qwen/qwen3.8-27b
+    vision_prompt = (
+        "You are an expert AI academic scanner and vision analyzer for students.\n"
+        "Carefully examine this cropped image.\n\n"
+        "TASK 1: VALIDATION\n"
+        "Determine if this image contains academic schoolwork, homework, a textbook/notebook page, "
+        "a physics/chemistry/math/biology problem, an equation, or an exam question.\n"
+        "If it is NOT schoolwork (e.g. selfie, clothes, room, food, pet, furniture, car, or random non-academic object), "
+        "you MUST mark 'is_schoolwork': false.\n\n"
+        "TASK 2: EXTRACTION (Only if it IS schoolwork)\n"
+        "- Transcribe the exact question text completely.\n"
+        "- Use standard LaTeX notation enclosed in $...$ for inline equations and $$...$$ for display equations. Never use raw unicode for math symbols.\n"
+        "- Identify the subject (Physics, Chemistry, Mathematics, Biology, etc.).\n"
+        "- Identify the topic / chapter title.\n"
+        "- Identify options A, B, C, D if present.\n"
+        "- Provide a brief diagram description if a diagram is included.\n\n"
+        "Return strictly valid JSON with no markdown fences:\n"
+        "{\n"
+        '  "is_schoolwork": true,\n'
+        '  "confidence": 0.95,\n'
+        '  "rejection_reason": null,\n'
+        '  "subject": "Physics",\n'
+        '  "topic": "Thermodynamics",\n'
+        '  "title": "Cyclic process P-V max temperature",\n'
+        '  "question_text": "...",\n'
+        '  "options": {"A": "...", "B": "...", "C": "...", "D": "..."},\n'
+        '  "diagram_description": null\n'
+        "}"
+    )
+
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            vision_resp = await client.post(
+                GROQ_URL,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {GROQ_API_KEY}",
+                },
+                json={
+                    "model": VISION_MODEL,
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": vision_prompt},
+                                {"type": "image_url", "image_url": {"url": img_b64}},
+                            ],
+                        }
+                    ],
+                    "temperature": 0.2,
+                    "max_tokens": 1500,
+                },
+            )
+        
+        if vision_resp.status_code != 200:
+            raise HTTPException(status_code=vision_resp.status_code, detail=f"Groq Vision Error: {vision_resp.text}")
+
+        vision_data = vision_resp.json()
+        raw_vision_content = vision_data.get("choices", [{}])[0].get("message", {}).get("content", "")
+
+        # Extract JSON
+        json_match = re.search(r"\{[\s\S]*\}", raw_vision_content)
+        if json_match:
+            try:
+                parsed_vision = json.loads(json_match.group())
+            except Exception:
+                parsed_vision = {"is_schoolwork": True, "question_text": raw_vision_content}
+        else:
+            parsed_vision = {"is_schoolwork": True, "question_text": raw_vision_content}
+
+        # Check schoolwork validation
+        if not parsed_vision.get("is_schoolwork", True):
+            return {
+                "is_schoolwork": False,
+                "error": "This doesn't look like schoolwork. Snap a question from your book or notebook.",
+                "reason": parsed_vision.get("rejection_reason"),
+            }
+
+        question_text = parsed_vision.get("question_text", "").strip()
+        if not question_text:
+            return {
+                "is_schoolwork": False,
+                "error": "This doesn't look like schoolwork. Snap a question from your book or notebook.",
+            }
+
+        subject = parsed_vision.get("subject", "General Science")
+        topic = parsed_vision.get("topic", "Doubt Solution")
+        title = parsed_vision.get("title", f"{subject} — {topic}")
+        options = parsed_vision.get("options", {})
+        diagram_desc = parsed_vision.get("diagram_description", "")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Vision processing failed: {str(e)}")
+
+    # Step 2: Generate Solution using openai/gpt-oss-120b
+    options_formatted = ""
+    if options and isinstance(options, dict):
+        options_formatted = "\n".join([f"{k}) {v}" for k, v in options.items() if v])
+
+    reasoning_prompt = f"""You are a master academic educator and tutor solving a student's question.
+Provide a crystal-clear, pedagogically sound, and beautifully formatted solution.
+
+Subject: {subject}
+Topic: {topic}
+Question:
+{question_text}
+
+{f"Options:\n{options_formatted}" if options_formatted else ""}
+{f"Diagram Context: {diagram_desc}" if diagram_desc else ""}
+
+STRICT FORMATTING REQUIREMENTS:
+1. Use Markdown for structure:
+   - Provide a clear bold topic header at the start (e.g. **{subject} — {topic}**).
+   - Include a concise subtitle if relevant.
+   - Include an **Important points:** section with bullet points highlighting key formulas and laws.
+   - Walk through the step-by-step solution clearly without skipping essential intermediate steps.
+   - End with a clearly boxed or highlighted final answer.
+2. LATEX DELIMITERS:
+   - Every single mathematical formula, expression, symbol, or equation MUST be formatted in LaTeX.
+   - Use $...$ for inline math (e.g. $T = \\frac{{PV}}{{nR}}$, $\\Delta U = 0$, $P_1 V_1 = P_2 V_2$).
+   - Use $$...$$ on its own line with a blank line before and after for standalone/display equations.
+   - NEVER use unicode mathematical characters (no ∂, ∫, ∑, θ, π, α, β bare in text) — write $\\partial$, $\\int$, $\\sum$, $\\theta$, $\\pi$, $\\alpha$, $\\beta$.
+   - NEVER use \\[...\\] or \\(...\\) delimiters.
+3. Keep the tone encouraging, clear, and easy for students to follow.
+"""
+
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            reasoning_resp = await client.post(
+                GROQ_URL,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {GROQ_API_KEY}",
+                },
+                json={
+                    "model": REASONING_MODEL,
+                    "messages": [
+                        {"role": "system", "content": "You are an elite STEM tutor who explains concepts with pristine mathematical clarity and perfect LaTeX notation."},
+                        {"role": "user", "content": reasoning_prompt},
+                    ],
+                    "temperature": 0.4,
+                    "max_tokens": 2500,
+                },
+            )
+
+        if reasoning_resp.status_code != 200:
+            raise HTTPException(status_code=reasoning_resp.status_code, detail=f"Reasoning Error: {reasoning_resp.text}")
+
+        reasoning_data = reasoning_resp.json()
+        solution_text = reasoning_data.get("choices", [{}])[0].get("message", {}).get("content", "")
+
+        return {
+            "is_schoolwork": True,
+            "subject": subject,
+            "topic": topic,
+            "title": title,
+            "question_text": question_text,
+            "options": options,
+            "solution": solution_text,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Solution generation failed: {str(e)}")
+
+
+@app.post("/snap-solve/transcribe")
+async def snap_transcribe(req: SnapTranscribeRequest):
+    """
+    Transcribes audio stream/recording using Deepgram Nova-3 for ultra-low latency.
+    """
+    if not req.audio_base64:
+        raise HTTPException(status_code=400, detail="audio_base64 is required")
+
+    try:
+        # Strip header if present
+        raw_b64 = req.audio_base64
+        if "," in raw_b64:
+            raw_b64 = raw_b64.split(",", 1)[1]
+        
+        audio_bytes = base64.b64decode(raw_b64)
+        mime = req.mime_type or "audio/webm"
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            dg_resp = await client.post(
+                DEEPGRAM_URL,
+                headers={
+                    "Authorization": f"Token {DEEPGRAM_API_KEY}",
+                    "Content-Type": mime,
+                },
+                content=audio_bytes,
+            )
+
+        if dg_resp.status_code != 200:
+            raise HTTPException(status_code=dg_resp.status_code, detail=f"Deepgram Error: {dg_resp.text}")
+
+        dg_data = dg_resp.json()
+        transcript = (
+            dg_data.get("results", {})
+            .get("channels", [{}])[0]
+            .get("alternatives", [{}])[0]
+            .get("transcript", "")
+        )
+
+        return {"transcript": transcript.strip()}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Transcription failed: {str(e)}")
+
+
+@app.post("/snap-solve/voice-doubt")
+async def snap_voice_doubt(req: SnapVoiceDoubtRequest):
+    """
+    Voice AI Tutor:
+    1. Uses openai/gpt-oss-120b to understand the student's doubt in the context
+       of the snapped question and solution.
+    2. Synthesizes expressive speech with canopylabs/orpheus-v1-english on Groq.
+    3. Returns text explanation + base64 audio stream for real-time playback.
+    """
+    if not req.user_doubt:
+        raise HTTPException(status_code=400, detail="user_doubt is required")
+
+    voice_name = req.voice if req.voice in ["autumn", "diana", "hannah", "austin", "daniel", "troy"] else "autumn"
+
+    # Conversational system prompt for the Voice AI Tutor
+    system_prompt = (
+        "You are an empathetic, world-class personal AI voice tutor sitting with the student. "
+        "The student is looking at a question and its solution and has asked a doubt.\n"
+        "RULES FOR YOUR RESPONSE:\n"
+        "1. Speak naturally, warmly, and encouragingly in conversational English.\n"
+        "2. Keep your explanation concise and punchy (2 to 4 sentences), so it is enjoyable to listen to via voice.\n"
+        "3. Address the exact confusion directly without generic filler.\n"
+        "4. If you refer to a formula, state the intuitive relationship clearly.\n"
+        "5. You may format key equations in $...$ for the on-screen transcript."
+    )
+
+    messages: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
+
+    # Provide context
+    context_msg = (
+        f"Context for the problem:\n"
+        f"Question: {req.question_text}\n\n"
+        f"Reference Solution:\n{req.solution}"
+    )
+    messages.append({"role": "user", "content": context_msg})
+    messages.append({"role": "assistant", "content": "I understand the question and the solution. How can I help you understand this better?"})
+
+    # Add conversation history if any
+    for h in req.history[-6:]:
+        if h.get("role") and h.get("content"):
+            messages.append({"role": h["role"], "content": h["content"]})
+
+    # Student's current doubt
+    messages.append({"role": "user", "content": req.user_doubt})
+
+    # Generate reasoning
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            gpt_resp = await client.post(
+                GROQ_URL,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {GROQ_API_KEY}",
+                },
+                json={
+                    "model": REASONING_MODEL,
+                    "messages": messages,
+                    "temperature": 0.5,
+                    "max_tokens": 400,
+                },
+            )
+
+        if gpt_resp.status_code != 200:
+            raise HTTPException(status_code=gpt_resp.status_code, detail=f"AI Tutor Error: {gpt_resp.text}")
+
+        gpt_data = gpt_resp.json()
+        tutor_text = gpt_data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+
+        # Clean text for speech synthesis
+        speech_text = clean_for_speech(tutor_text)
+        if not speech_text:
+            speech_text = "Let me explain that for you."
+
+        # Synthesize audio with canopylabs/orpheus-v1-english
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            tts_resp = await client.post(
+                GROQ_TTS_URL,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {GROQ_API_KEY}",
+                },
+                json={
+                    "model": TTS_MODEL,
+                    "input": speech_text[:1000],
+                    "voice": voice_name,
+                    "response_format": "wav",
+                },
+            )
+
+        audio_b64 = ""
+        if tts_resp.status_code == 200:
+            audio_b64 = base64.b64encode(tts_resp.content).decode("utf-8")
+
+        return {
+            "text": tutor_text,
+            "speech_text": speech_text,
+            "audio_base64": audio_b64,
+            "voice": voice_name,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Voice doubt processing failed: {str(e)}")
+
+
+@app.post("/snap-solve/tts")
+async def snap_tts(req: SnapTTSRequest):
+    """
+    Direct TTS generation using canopylabs/orpheus-v1-english on Groq.
+    """
+    if not req.text:
+        raise HTTPException(status_code=400, detail="text is required")
+
+    voice_name = req.voice if req.voice in ["autumn", "diana", "hannah", "austin", "daniel", "troy"] else "autumn"
+    speech_text = clean_for_speech(req.text)
+
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            tts_resp = await client.post(
+                GROQ_TTS_URL,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {GROQ_API_KEY}",
+                },
+                json={
+                    "model": TTS_MODEL,
+                    "input": speech_text[:1000],
+                    "voice": voice_name,
+                    "response_format": "wav",
+                },
+            )
+
+        if tts_resp.status_code != 200:
+            raise HTTPException(status_code=tts_resp.status_code, detail=f"TTS Error: {tts_resp.text}")
+
+        audio_b64 = base64.b64encode(tts_resp.content).decode("utf-8")
+        return {"audio_base64": audio_b64, "voice": voice_name}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"TTS failed: {str(e)}")
+

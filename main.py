@@ -11,6 +11,19 @@ All four actions are supported:
 
 The `determine_answer` action has been removed — `correct_option` now
 arrives directly from the database.
+
+TTS changes in this version
+---------------------------
+* Math/LaTeX is converted to *spoken English* before it reaches the TTS
+  engine ("-2" -> "minus 2", "|x-1|" -> "absolute value of x minus 1", ...).
+  A small LLM rewrite pass does the heavy lifting; a strict regex cleaner is
+  the safety net.
+* Groq Orpheus only accepts short inputs (~200 chars), so text is split into
+  sentence chunks, synthesized in parallel and merged into one WAV.
+  (Previously long text was rejected and silently fell back to Deepgram,
+  which is what sounded robotic.)
+* Female voices only (hannah / autumn / diana), default = hannah.
+* Deepgram fallback upgraded to Aura-2 (Thalia), a much more natural voice.
 """
 
 from __future__ import annotations
@@ -18,6 +31,8 @@ import os
 import json
 import re
 import base64
+import asyncio
+import struct
 from typing import Any, Optional
 
 import httpx
@@ -34,7 +49,8 @@ GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 GROQ_TTS_URL = "https://api.groq.com/openai/v1/audio/speech"
 GROQ_TRANSCRIBE_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 DEEPGRAM_URL = "https://api.deepgram.com/v1/listen?model=nova-3&language=en&smart_format=true"
-DEEPGRAM_TTS_URL = "https://api.deepgram.com/v1/speak?model=aura-asteria-en&encoding=linear16&container=wav"
+# Aura-2 Thalia: natural-sounding female voice (fallback only)
+DEEPGRAM_TTS_URL = "https://api.deepgram.com/v1/speak?model=aura-2-thalia-en&encoding=linear16&container=wav"
 
 VISION_MODEL = "qwen/qwen3.8-27b"
 REASONING_MODEL = "openai/gpt-oss-120b"
@@ -42,7 +58,21 @@ DEFAULT_MODEL = "openai/gpt-oss-120b"
 TTS_MODEL = "canopylabs/orpheus-v1-english"
 STT_MODEL = "whisper-large-v3"
 
-app = FastAPI(title="Rookie Backend", version="1.0.0")
+# Small/fast model used only to rewrite math into spoken English for TTS.
+SPEECH_MODEL = os.environ.get("SPEECH_MODEL", "openai/gpt-oss-20b")
+
+# ── TTS config ─────────────────────────────────────────────────────────────
+FEMALE_VOICES = ["hannah", "autumn", "diana"]          # Orpheus female voices
+DEFAULT_VOICE = os.environ.get("TTS_DEFAULT_VOICE", "hannah")
+if DEFAULT_VOICE not in FEMALE_VOICES:
+    DEFAULT_VOICE = "hannah"
+
+# Orpheus supports vocal directions like [cheerful]. Set TTS_DIRECTION="" to disable.
+TTS_DIRECTION = os.environ.get("TTS_DIRECTION", "[cheerful]")
+TTS_CHUNK_LIMIT = 190        # Groq Orpheus input limit is ~200 chars per request
+MAX_TTS_CHARS = 1500         # total spoken length cap per request
+
+app = FastAPI(title="Rookie Backend", version="1.1.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -189,7 +219,7 @@ async def solution(req: SolutionRequest):
         pct = pct_context(req)
 
         if req.buddy_name and req.buddy_system_prompt:
-          prompt = f"""A student needs help understanding a JEE question.
+            prompt = rf"""A student needs help understanding a JEE question.
 
 You are {req.buddy_name}, and you are personally teaching this student.
 
@@ -347,6 +377,31 @@ Answer: Option {req.correct_option}
 
 Now explain the question naturally in {req.buddy_name}'s exact personality.
 """
+        else:
+            # Fallback when no buddy is selected (previously `prompt` was undefined here)
+            prompt = f"""Explain this JEE question clearly and concisely, focusing on the core concept and any common trap.
+
+MATH FORMATTING: Use only $...$ for inline math and $$...$$ for display math. Never use \\[...\\] or \\(...\\).
+Maximum 5 short paragraphs. Do not add headings. Do not mechanically go through every option.
+{pct}
+
+Question:
+{req.question_text}
+
+Options:
+A) {req.option_A}
+B) {req.option_B}
+C) {req.option_C}
+D) {req.option_D}
+
+Correct Answer: {req.correct_option}
+
+Reference Solution (source of reasoning only, rewrite in your own words):
+{req.solution}
+
+End with exactly:
+Answer: Option {req.correct_option}
+"""
 
         messages = build_messages(prompt, req.buddy_system_prompt)
         groq_data = await call_groq(messages, req.model, temperature=0.5, max_tokens=2000)
@@ -468,99 +523,416 @@ Create a new MCQ and respond in this EXACT JSON format (no additional text, no m
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# SNAP & SOLVE + VOICE AI TUTOR ENDPOINTS
+# SPEECH PREPARATION  (LaTeX / markdown  ->  words a TTS engine can say)
 # ══════════════════════════════════════════════════════════════════════════
 
+_GREEK = {
+    "alpha": "alpha", "beta": "beta", "gamma": "gamma", "delta": "delta",
+    "epsilon": "epsilon", "varepsilon": "epsilon", "zeta": "zeta", "eta": "eta",
+    "theta": "theta", "vartheta": "theta", "iota": "iota", "kappa": "kappa",
+    "lambda": "lambda", "mu": "mu", "nu": "nu", "xi": "ksi", "pi": "pi",
+    "rho": "rho", "sigma": "sigma", "tau": "tau", "upsilon": "upsilon",
+    "phi": "phi", "varphi": "phi", "chi": "kai", "psi": "psi", "omega": "omega",
+    "Gamma": "gamma", "Delta": "delta", "Theta": "theta", "Lambda": "lambda",
+    "Xi": "ksi", "Pi": "pi", "Sigma": "sigma", "Phi": "phi", "Psi": "psi",
+    "Omega": "omega",
+}
+
+_CMD_WORDS = {
+    "times": " times ", "cdot": " times ", "div": " divided by ",
+    "pm": " plus or minus ", "mp": " minus or plus ",
+    "approx": " approximately ", "sim": " approximately ", "simeq": " approximately ",
+    "neq": " not equal to ", "ne": " not equal to ",
+    "leq": " less than or equal to ", "le": " less than or equal to ",
+    "geq": " greater than or equal to ", "ge": " greater than or equal to ",
+    "ll": " much less than ", "gg": " much greater than ",
+    "implies": " which gives ", "Rightarrow": " which gives ",
+    "Longrightarrow": " which gives ", "rightarrow": " goes to ",
+    "longrightarrow": " goes to ", "to": " goes to ",
+    "Leftrightarrow": " if and only if ", "iff": " if and only if ",
+    "infty": " infinity ", "in": " in ", "propto": " proportional to ",
+    "sin": " sine ", "cos": " cosine ", "tan": " tangent ",
+    "cot": " cotangent ", "sec": " secant ", "csc": " cosecant ",
+    "log": " log ", "ln": " natural log ", "exp": " e to the ",
+    "lim": " limit ", "int": " integral of ", "sum": " sum of ",
+    "prod": " product of ", "partial": " partial ", "nabla": " del ",
+    "circ": " degrees ", "degree": " degrees ", "angle": " angle ",
+    "perp": " perpendicular to ", "parallel": " parallel to ",
+    "therefore": " therefore ", "because": " because ",
+    "ldots": " and so on ", "cdots": " and so on ", "dots": " and so on ",
+    "quad": " ", "qquad": " ", "hbar": " h bar ", "ell": " l ",
+}
+
+_UNICODE = {
+    "−": "-", "–": "-", "—": ", ",
+    "×": " times ", "·": " times ", "÷": " divided by ",
+    "≤": " less than or equal to ", "≥": " greater than or equal to ",
+    "≠": " not equal to ", "≈": " approximately ", "±": " plus or minus ",
+    "√": " square root of ", "°": " degrees ", "²": " squared ", "³": " cubed ",
+    "→": " goes to ", "⇒": " which gives ", "⟹": " which gives ",
+    "∞": " infinity ", "∝": " proportional to ",
+    "π": " pi ", "θ": " theta ", "Δ": " delta ", "α": " alpha ", "β": " beta ",
+    "γ": " gamma ", "λ": " lambda ", "μ": " mu ", "µ": " mu ", "σ": " sigma ",
+    "ω": " omega ", "φ": " phi ", "ρ": " rho ", "τ": " tau ", "Ω": " omega ",
+}
+
+_MATH_SEGMENT = re.compile(
+    r"(\$\$[\s\S]+?\$\$|\$[^$\n]+?\$|\\\[[\s\S]+?\\\]|\\\([\s\S]+?\\\))"
+)
+
+
+def _cmd_repl(m: "re.Match[str]") -> str:
+    name = m.group(1)
+    if name in _GREEK:
+        return f" {_GREEK[name]} "
+    if name in _CMD_WORDS:
+        return _CMD_WORDS[name]
+    return " "          # unknown command: drop it silently (never say "backslash")
+
+
+def _root_repl(m: "re.Match[str]") -> str:
+    n, body = m.group(1).strip(), m.group(2)
+    if n == "3":
+        return f" cube root of {body} "
+    return f" {n} th root of {body} "
+
+
+def _sub_repl(m: "re.Match[str]") -> str:
+    body = (m.group(1) or m.group(2) or "").strip()
+    if body.isdigit():
+        return f" {body} "           # H_2 O -> "H 2 O", v_1 -> "v 1"
+    return f" sub {body} "
+
+
+def math_to_speech(expr: str) -> str:
+    """Turn one LaTeX-ish math expression into plain spoken English."""
+    s = expr
+
+    for k, v in _UNICODE.items():
+        s = s.replace(k, v)
+
+    # layout-only commands
+    s = re.sub(r"\\(?:left|right|bigl|bigr|big|Big|bigg|Bigg|displaystyle|textstyle)(?![a-zA-Z])", "", s)
+    s = re.sub(r"\\(?:lvert|rvert|vert)(?![a-zA-Z])", "|", s)
+    s = re.sub(r"\\[,;:! ]", " ", s)
+    s = s.replace("\\\\", " ")
+    s = s.replace("\\{", " ").replace("\\}", " ")
+
+    # degrees written as ^\circ or ^{\circ}
+    s = re.sub(r"\^\s*\{\s*\\circ\s*\}|\^\s*\\circ(?![a-zA-Z])", " degrees ", s)
+
+    # nested constructs (repeat so inner ones resolve first)
+    for _ in range(8):
+        prev = s
+        s = re.sub(r"\\[dt]?frac\s*\{([^{}]*)\}\s*\{([^{}]*)\}", r" \1 over \2 ", s)
+        s = re.sub(r"\\sqrt\s*\[([^\]]*)\]\s*\{([^{}]*)\}", _root_repl, s)
+        s = re.sub(r"\\sqrt\s*\{([^{}]*)\}", r" square root of \1 ", s)
+        s = re.sub(r"\\(?:vec|overrightarrow)\s*\{([^{}]*)\}", r" vector \1 ", s)
+        s = re.sub(
+            r"\\(?:boxed|text|textbf|textit|mathrm|mathbf|mathit|mathcal|operatorname|mbox|"
+            r"underline|overline|bar|hat|tilde)\s*\{([^{}]*)\}",
+            r" \1 ",
+            s,
+        )
+        if s == prev:
+            break
+
+    # absolute value  |x-1|  ->  absolute value of x-1
+    s = re.sub(r"\|([^|]+)\|", r" absolute value of \1 ", s)
+
+    # powers
+    s = re.sub(r"\)\s*\^\s*(?:\{\s*2\s*\}|2(?!\d))", " , all squared ", s)
+    s = re.sub(r"\)\s*\^\s*(?:\{\s*3\s*\}|3(?!\d))", " , all cubed ", s)
+    s = re.sub(r"\^\s*\{\s*2\s*\}|\^\s*2(?!\d)", " squared ", s)
+    s = re.sub(r"\^\s*\{\s*3\s*\}|\^\s*3(?!\d)", " cubed ", s)
+    s = re.sub(r"\^\s*\{([^{}]*)\}", r" to the power of \1 ", s)
+    s = re.sub(r"\^\s*(-?\w+)", r" to the power of \1 ", s)
+
+    # subscripts
+    s = re.sub(r"_\s*\{([^{}]*)\}|_\s*(\w)", _sub_repl, s)
+
+    # every remaining \command -> words (or dropped)
+    s = re.sub(r"\\([a-zA-Z]+)", _cmd_repl, s)
+    s = s.replace("\\", " ")
+
+    # implicit multiplication between factors: (y-2)(y-3)
+    s = re.sub(r"\)\s*\(", ") times (", s)
+    # "5y" -> "5 y" so TTS doesn't say "five why" as one blob
+    s = re.sub(r"(?<=\d)(?=[A-Za-z])", " ", s)
+
+    # operators
+    s = re.sub(r"(?<=[A-Za-z])\s*/\s*(?=[A-Za-z])", " per ", s)
+    s = s.replace("/", " over ")
+    s = s.replace("<", " is less than ").replace(">", " is greater than ")
+    s = s.replace("=", " equals ")
+    s = s.replace("+", " plus ")
+    s = s.replace("*", " times ")
+    s = s.replace("%", " percent ")
+    s = re.sub(r"(?<=\w)!", " factorial ", s)
+    s = re.sub(r"(?<=\w)'", " prime ", s)
+    s = s.replace("-", " minus ")
+
+    # brackets / leftovers
+    s = re.sub(r"[(){}\[\]|~&^_]", " ", s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _text_to_speech(part: str) -> str:
+    """Clean a non-math chunk (markdown + stray LaTeX) for speech."""
+    p = part
+    p = re.sub(r"```[\s\S]*?```", " ", p)
+    p = re.sub(r"!?\[([^\]]*)\]\([^)]*\)", r"\1", p)               # links
+    p = re.sub(r"^[ \t]*#{1,6}[ \t]*", "", p, flags=re.M)           # headings
+    p = re.sub(r"\n[ \t]*(?:[*•]|-)[ \t]+", ". ", p)                # bullets -> sentence break
+    p = re.sub(r"^[ \t]*(?:[*•]|-)[ \t]+", "", p)
+    p = re.sub(r"\n\s*\n+", ". ", p)
+    p = p.replace("\n", " ")
+    p = re.sub(r"[*`~#]+", " ", p)
+    p = p.replace("−", "-").replace("–", "-")
+    p = p.replace("—", ", ")
+    p = p.replace("->", " goes to ").replace("=>", " which gives ")
+    p = re.sub(r"(?<=[A-Za-z])-(?=[A-Za-z])", " ", p)               # step-by-step -> step by step
+    p = re.sub(r"\s-+\s", ", ", p)                                   # " - " dash -> pause
+    p = re.sub(r"(?<![\w.])-(?=\d)", "minus ", p)                    # -2 -> minus 2
+    p = re.sub(r"\s=\s", " equals ", p)
+    p = p.replace("%", " percent ")
+    if re.search(r"\\[a-zA-Z]|\^", p):
+        p = math_to_speech(p)                                        # stray LaTeX without $ delimiters
+    return p
+
+
 def clean_for_speech(text: str) -> str:
-    """Converts LaTeX and markdown math into natural spoken words for TTS."""
-    s = text
-    # Replace common LaTeX math commands with natural spoken phrases
-    s = re.sub(r'\\frac\{([^}]+)\}\{([^}]+)\}', r'\1 over \2', s)
-    s = re.sub(r'\\sqrt\{([^}]+)\}', r'square root of \1', s)
-    s = re.sub(r'\\sqrt\[(\d+)\]\{([^}]+)\}', r'\1th root of \2', s)
-    s = re.sub(r'\\boxed\{([^}]+)\}', r'\1', s)
-    s = re.sub(r'\\text\{([^}]+)\}', r'\1', s)
-    s = re.sub(r'\\mathrm\{([^}]+)\}', r'\1', s)
-    s = re.sub(r'\\mathbf\{([^}]+)\}', r'\1', s)
-    
-    # Symbols & operators
-    s = s.replace(r'\times', ' times ')
-    s = s.replace(r'\pm', ' plus or minus ')
-    s = s.replace(r'\approx', ' approximately ')
-    s = s.replace(r'\neq', ' not equal to ')
-    s = s.replace(r'\leq', ' less than or equal to ')
-    s = s.replace(r'\le', ' less than or equal to ')
-    s = s.replace(r'\geq', ' greater than or equal to ')
-    s = s.replace(r'\ge', ' greater than or equal to ')
-    s = s.replace(r'\rightarrow', ' approaches ')
-    s = s.replace(r'\Rightarrow', ' implies ')
-    s = s.replace(r'\infty', ' infinity ')
-    s = s.replace(r'\Delta', ' delta ')
-    s = s.replace(r'\theta', ' theta ')
-    s = s.replace(r'\pi', ' pi ')
-    s = s.replace(r'\alpha', ' alpha ')
-    s = s.replace(r'\beta', ' beta ')
-    s = s.replace(r'\gamma', ' gamma ')
-    s = s.replace(r'\lambda', ' lambda ')
-    s = s.replace(r'\mu', ' micro ')
-    s = s.replace(r'\sigma', ' sigma ')
-    s = s.replace(r'\omega', ' omega ')
-    
-    # Powers and subscripts
-    s = re.sub(r'\^2\b', ' squared', s)
-    s = re.sub(r'\^3\b', ' cubed', s)
-    s = re.sub(r'\^\{?([0-9a-zA-Z]+)\}?', r' to the power of \1', s)
-    s = re.sub(r'_\{?([0-9a-zA-Z]+)\}?', r' sub \1', s)
-    
-    # Strip delimiters and markdown
-    s = re.sub(r'\$\$|\$', ' ', s)
-    s = re.sub(r'\\\[|\\\]|\\\(|\\\)', ' ', s)
-    s = re.sub(r'[\*_#`~]', ' ', s)
-    s = re.sub(r'\\[a-zA-Z]+', ' ', s)
-    s = re.sub(r'[{}]', ' ', s)
-    s = re.sub(r'\s+', ' ', s).strip()
-    return s
+    """Converts LaTeX, markdown and symbols into natural spoken words for TTS."""
+    if not text:
+        return ""
+
+    pieces = _MATH_SEGMENT.split(text)
+    out: list[str] = []
+    for i, piece in enumerate(pieces):
+        if i % 2 == 1:   # captured math segment
+            inner = piece
+            for a, b in (("$$", "$$"), ("$", "$"), ("\\[", "\\]"), ("\\(", "\\)")):
+                if inner.startswith(a) and inner.endswith(b) and len(inner) >= len(a) + len(b):
+                    inner = inner[len(a):len(inner) - len(b)]
+                    break
+            out.append(" " + math_to_speech(inner) + " ")
+        else:
+            out.append(_text_to_speech(piece))
+
+    s = " ".join(out)
+    s = s.replace("$", " ")
+    s = re.sub(r"\s+", " ", s)
+    s = re.sub(r"\s+([,.;:!?])", r"\1", s)
+    s = re.sub(r"[,;:]+\s*(?=[.!?])", "", s)                         # ", ." -> "."
+    s = re.sub(r"([.!?])(?:\s*[.,;:])+", r"\1", s)                   # ". ." / ".," -> "."
+    s = re.sub(r"([,;:])(?:\s*[,;:])+", r"\1", s)
+    return s.strip(" ,.;:") + ("." if s.strip() and s.strip()[-1] not in ".!?" else "")
 
 
-async def synthesize_speech(text: str, voice_name: str = "autumn") -> tuple[str, str]:
+_MATHY = re.compile(r"[$\\^_=|]|\d\s*[-+*/]\s*[\dA-Za-z(]|[−×÷≤≥≠≈√²³°]")
+
+
+def looks_mathy(text: str) -> bool:
+    return bool(_MATHY.search(text or ""))
+
+
+async def llm_speech_script(text: str) -> Optional[str]:
     """
-    Synthesizes speech:
-    1. First tries Groq Cloud with canopylabs/orpheus-v1-english.
-    2. If Groq fails (e.g. model terms not yet accepted on org key, or rate limit),
-       seamlessly falls back to Deepgram Aura TTS (aura-asteria-en).
+    Rewrite text containing math into natural spoken English using a small,
+    fast model. Returns None on any failure so the regex cleaner takes over.
+    """
+    if not GROQ_API_KEY or not text.strip():
+        return None
+
+    system = (
+        "You convert tutoring text into a script that will be read aloud by a text-to-speech voice.\n"
+        "RULES:\n"
+        "- Output ONLY the spoken script, nothing else. No markdown, no LaTeX, no dollar signs, no backslashes, no brackets for math.\n"
+        "- Say every symbol in words: minus (never 'dash' or 'hyphen'), plus, times, divided by, equals, "
+        "squared, cubed, 'to the power of', 'square root of', 'absolute value of', 'x over 2' for fractions, "
+        "'greater than', 'less than or equal to', Greek letters by name, 'degrees', etc.\n"
+        "- Make grouping clear in words, e.g. (x-1)^2 -> 'x minus 1, all squared'; |x-1| -> 'the absolute value of x minus 1'.\n"
+        "- Read lists of answers naturally, e.g. -2, -1, 3, 4 -> 'minus 2, minus 1, 3 and 4'.\n"
+        "- Keep the original meaning, tone and language (including Hinglish words). Do not add new facts or explanations.\n"
+        "- Use short, natural sentences with commas and full stops so the voice breathes naturally.\n"
+        "- Do not say 'Option' letters differently than written; 'Answer: Option B' stays 'Answer, option B'."
+    )
+
+    payload: dict[str, Any] = {
+        "model": SPEECH_MODEL,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": text[:2500]},
+        ],
+        "temperature": 0.2,
+        "max_tokens": 1500,
+    }
+    if "gpt-oss" in SPEECH_MODEL:
+        payload["reasoning_effort"] = "low"
+
+    try:
+        async with httpx.AsyncClient(timeout=25.0) as client:
+            resp = await client.post(
+                GROQ_URL,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {GROQ_API_KEY}",
+                },
+                json=payload,
+            )
+        if resp.status_code != 200:
+            print(f"[TTS] speech-script LLM status {resp.status_code}: {resp.text[:150]}")
+            return None
+        content = first_choice(resp.json()).strip()
+        return content or None
+    except Exception as e:
+        print(f"[TTS] speech-script LLM exception: {e}")
+        return None
+
+
+async def prepare_speech(text: str) -> str:
+    """Display text (with LaTeX) -> clean spoken text."""
+    t = text or ""
+    if looks_mathy(t):
+        spoken = await llm_speech_script(t)
+        if spoken:
+            t = spoken
+    # Always run the regex pass: it's the safety net (and is harmless on clean text)
+    return clean_for_speech(t)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# TTS  (Groq Orpheus -> Deepgram Aura-2 fallback)
+# ══════════════════════════════════════════════════════════════════════════
+
+def chunk_text(text: str, limit: int) -> list[str]:
+    """Split text into sentence-aligned chunks of at most `limit` characters."""
+    sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
+    chunks: list[str] = []
+    cur = ""
+
+    def flush() -> None:
+        nonlocal cur
+        if cur:
+            chunks.append(cur)
+            cur = ""
+
+    for sent in sentences:
+        while len(sent) > limit:               # very long sentence: split at comma / space
+            cut = sent.rfind(", ", 0, limit)
+            if cut < 40:
+                cut = sent.rfind(" ", 0, limit)
+            if cut <= 0:
+                cut = limit
+            elif sent[cut] == ",":
+                cut += 1
+            flush()
+            chunks.append(sent[:cut].strip())
+            sent = sent[cut:].strip()
+        if not sent:
+            continue
+        if cur and len(cur) + 1 + len(sent) <= limit:
+            cur += " " + sent
+        else:
+            flush()
+            cur = sent
+    flush()
+    return chunks
+
+
+def _wav_parts(data: bytes) -> Optional[tuple[bytes, bytes]]:
+    """Return (fmt_chunk_body, pcm_bytes) from a WAV file, tolerating streaming headers."""
+    if len(data) < 12 or data[:4] != b"RIFF":
+        return None
+    pos, fmt, pcm = 12, None, None
+    while pos + 8 <= len(data):
+        cid = data[pos:pos + 4]
+        size = struct.unpack("<I", data[pos + 4:pos + 8])[0]
+        body = pos + 8
+        if cid == b"fmt ":
+            fmt = data[body:body + size]
+        elif cid == b"data":
+            if size == 0 or size == 0xFFFFFFFF or body + size > len(data):
+                pcm = data[body:]
+            else:
+                pcm = data[body:body + size]
+            break
+        pos = body + size + (size & 1)
+    if fmt is None or pcm is None:
+        return None
+    return fmt, pcm
+
+
+def merge_wavs(wavs: list[bytes]) -> bytes:
+    """Concatenate several WAV files (same format) into one."""
+    if len(wavs) == 1:
+        return wavs[0]
+    parsed = [_wav_parts(w) for w in wavs]
+    if any(p is None for p in parsed):
+        return wavs[0]
+    fmt = parsed[0][0]                                    # type: ignore[index]
+    pcm = b"".join(p[1] for p in parsed)                  # type: ignore[index]
+    fmt_chunk = b"fmt " + struct.pack("<I", len(fmt)) + fmt
+    data_chunk = b"data" + struct.pack("<I", len(pcm)) + pcm
+    riff_size = 4 + len(fmt_chunk) + len(data_chunk)
+    return b"RIFF" + struct.pack("<I", riff_size) + b"WAVE" + fmt_chunk + data_chunk
+
+
+async def _groq_tts_chunk(client: httpx.AsyncClient, sem: asyncio.Semaphore, text: str, voice: str) -> bytes:
+    prefix = f"{TTS_DIRECTION} " if TTS_DIRECTION else ""
+    async with sem:
+        resp = await client.post(
+            GROQ_TTS_URL,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {GROQ_API_KEY}",
+            },
+            json={
+                "model": TTS_MODEL,
+                "input": f"{prefix}{text}",
+                "voice": voice,
+                "response_format": "wav",
+            },
+        )
+    if resp.status_code != 200 or len(resp.content) < 100:
+        raise RuntimeError(f"Groq TTS status {resp.status_code}: {resp.text[:150]}")
+    return resp.content
+
+
+def pick_voice(voice_name: Optional[str]) -> str:
+    """Female voices only."""
+    return voice_name if voice_name in FEMALE_VOICES else DEFAULT_VOICE
+
+
+async def synthesize_speech(text: str, voice_name: Optional[str] = None) -> tuple[str, str]:
+    """
+    Synthesizes speech from ALREADY-PREPARED spoken text:
+    1. Groq Orpheus, chunked (<= ~190 chars each), parallel, merged into one WAV.
+    2. If anything fails, falls back to Deepgram Aura-2 (Thalia).
     Returns (base64_audio, mime_type).
     """
-    clean_text = clean_for_speech(text)
+    clean_text = clean_for_speech(text)[:MAX_TTS_CHARS]
     if not clean_text:
         clean_text = "Let me explain that for you."
 
-    valid_groq_voice = voice_name if voice_name in ["autumn", "diana", "hannah", "austin", "daniel", "troy"] else "autumn"
+    voice = pick_voice(voice_name)
 
-    # 1. Attempt Groq Cloud TTS
+    # 1. Groq Orpheus
     if GROQ_API_KEY:
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                tts_resp = await client.post(
-                    GROQ_TTS_URL,
-                    headers={
-                        "Content-Type": "application/json",
-                        "Authorization": f"Bearer {GROQ_API_KEY}",
-                    },
-                    json={
-                        "model": TTS_MODEL,
-                        "input": clean_text[:1000],
-                        "voice": valid_groq_voice,
-                        "response_format": "wav",
-                    },
+            limit = TTS_CHUNK_LIMIT - (len(TTS_DIRECTION) + 1 if TTS_DIRECTION else 0)
+            chunks = chunk_text(clean_text, limit)
+            sem = asyncio.Semaphore(4)
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                wavs = await asyncio.gather(
+                    *[_groq_tts_chunk(client, sem, c, voice) for c in chunks]
                 )
-            if tts_resp.status_code == 200 and len(tts_resp.content) > 100:
-                return base64.b64encode(tts_resp.content).decode("utf-8"), "audio/wav"
-            else:
-                print(f"[TTS] Groq TTS responded with status {tts_resp.status_code}: {tts_resp.text[:150]}")
+            audio = merge_wavs(list(wavs))
+            return base64.b64encode(audio).decode("utf-8"), "audio/wav"
         except Exception as e:
-            print(f"[TTS] Groq TTS exception: {e}")
+            print(f"[TTS] Groq TTS failed, falling back to Deepgram: {e}")
 
-    # 2. Fallback to Deepgram Aura TTS
+    # 2. Deepgram Aura-2 fallback
     if DEEPGRAM_API_KEY:
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
@@ -570,17 +942,20 @@ async def synthesize_speech(text: str, voice_name: str = "autumn") -> tuple[str,
                         "Content-Type": "application/json",
                         "Authorization": f"Token {DEEPGRAM_API_KEY}",
                     },
-                    json={"text": clean_text[:1500]},
+                    json={"text": clean_text[:1900]},
                 )
             if dg_resp.status_code == 200 and len(dg_resp.content) > 100:
                 return base64.b64encode(dg_resp.content).decode("utf-8"), "audio/wav"
-            else:
-                print(f"[TTS] Deepgram TTS responded with status {dg_resp.status_code}: {dg_resp.text[:150]}")
+            print(f"[TTS] Deepgram TTS responded with status {dg_resp.status_code}: {dg_resp.text[:150]}")
         except Exception as e:
             print(f"[TTS] Deepgram TTS exception: {e}")
 
     return "", "audio/wav"
 
+
+# ══════════════════════════════════════════════════════════════════════════
+# SNAP & SOLVE + VOICE AI TUTOR ENDPOINTS
+# ══════════════════════════════════════════════════════════════════════════
 
 class SnapAnalyzeRequest(BaseModel):
     image_base64: str
@@ -596,12 +971,12 @@ class SnapVoiceDoubtRequest(BaseModel):
     solution: str
     user_doubt: str
     history: Optional[list[dict[str, str]]] = Field(default_factory=list)
-    voice: Optional[str] = "autumn"
+    voice: Optional[str] = None
 
 
 class SnapTTSRequest(BaseModel):
     text: str
-    voice: Optional[str] = "autumn"
+    voice: Optional[str] = None
 
 
 @app.post("/snap-solve/analyze")
@@ -674,7 +1049,7 @@ async def snap_analyze(req: SnapAnalyzeRequest):
                     "max_tokens": 1500,
                 },
             )
-        
+
         if vision_resp.status_code != 200:
             raise HTTPException(status_code=vision_resp.status_code, detail=f"Groq Vision Error: {vision_resp.text}")
 
@@ -722,7 +1097,7 @@ async def snap_analyze(req: SnapAnalyzeRequest):
     if options and isinstance(options, dict):
         options_formatted = "\n".join([f"{k}) {v}" for k, v in options.items() if v])
 
-    reasoning_prompt = f"""A student needs help understanding this question.
+    reasoning_prompt = rf"""A student needs help understanding this question.
 
 Your job is NOT to write a textbook solution, coaching-module solution, or answer-key explanation.
 Your job is to make the student genuinely understand the question with clear intuition and pristine mathematical reasoning.
@@ -800,7 +1175,6 @@ Question:
 {f"Diagram Context: {diagram_desc}" if diagram_desc else ""}
 """
 
-
     try:
         async with httpx.AsyncClient(timeout=120.0) as client:
             reasoning_resp = await client.post(
@@ -855,7 +1229,7 @@ async def snap_transcribe(req: SnapTranscribeRequest):
         raw_b64 = req.audio_base64
         if "," in raw_b64:
             raw_b64 = raw_b64.split(",", 1)[1]
-        
+
         audio_bytes = base64.b64decode(raw_b64)
         mime = req.mime_type or "audio/webm"
 
@@ -900,20 +1274,20 @@ async def snap_transcribe(req: SnapTranscribeRequest):
         raise HTTPException(status_code=500, detail=f"Transcription failed: {str(e)}")
 
 
-
 @app.post("/snap-solve/voice-doubt")
 async def snap_voice_doubt(req: SnapVoiceDoubtRequest):
     """
     Voice AI Tutor:
     1. Uses openai/gpt-oss-120b to understand the student's doubt in the context
        of the snapped question and solution.
-    2. Synthesizes expressive speech with canopylabs/orpheus-v1-english on Groq.
-    3. Returns text explanation + base64 audio stream for real-time playback.
+    2. Converts the answer (with math) into natural spoken English.
+    3. Synthesizes speech with a female Orpheus voice (Deepgram Aura-2 fallback).
+    4. Returns text explanation + base64 audio stream for real-time playback.
     """
     if not req.user_doubt:
         raise HTTPException(status_code=400, detail="user_doubt is required")
 
-    voice_name = req.voice if req.voice in ["autumn", "diana", "hannah", "austin", "daniel", "troy"] else "autumn"
+    voice_name = pick_voice(req.voice)
 
     # Conversational system prompt for the Voice AI Tutor
     system_prompt = (
@@ -939,7 +1313,7 @@ async def snap_voice_doubt(req: SnapVoiceDoubtRequest):
     messages.append({"role": "assistant", "content": "I understand the question and the solution. How can I help you understand this better?"})
 
     # Add conversation history if any
-    for h in req.history[-6:]:
+    for h in (req.history or [])[-6:]:
         if h.get("role") and h.get("content"):
             messages.append({"role": h["role"], "content": h["content"]})
 
@@ -969,12 +1343,13 @@ async def snap_voice_doubt(req: SnapVoiceDoubtRequest):
         gpt_data = gpt_resp.json()
         tutor_text = gpt_data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
 
-        # Synthesize audio with Groq / Deepgram fallback
-        audio_b64, audio_mime = await synthesize_speech(tutor_text, voice_name)
+        # Math -> spoken English, then synthesize
+        speech_text = await prepare_speech(tutor_text)
+        audio_b64, audio_mime = await synthesize_speech(speech_text, voice_name)
 
         return {
             "text": tutor_text,
-            "speech_text": clean_for_speech(tutor_text),
+            "speech_text": speech_text,
             "audio_base64": audio_b64,
             "audio_mime": audio_mime,
             "voice": voice_name,
@@ -989,21 +1364,27 @@ async def snap_voice_doubt(req: SnapVoiceDoubtRequest):
 @app.post("/snap-solve/tts")
 async def snap_tts(req: SnapTTSRequest):
     """
-    Direct TTS generation with Groq / Deepgram fallback.
+    Direct TTS generation (read-aloud for explanations) with math converted to
+    spoken English, female voice, Groq -> Deepgram fallback.
     """
     if not req.text:
         raise HTTPException(status_code=400, detail="text is required")
 
     try:
-        voice_name = req.voice if req.voice in ["autumn", "diana", "hannah", "austin", "daniel", "troy"] else "autumn"
-        audio_b64, audio_mime = await synthesize_speech(req.text, voice_name)
+        voice_name = pick_voice(req.voice)
+        speech_text = await prepare_speech(req.text)
+        audio_b64, audio_mime = await synthesize_speech(speech_text, voice_name)
         if not audio_b64:
             raise HTTPException(status_code=500, detail="Speech synthesis failed on all providers")
 
-        return {"audio_base64": audio_b64, "audio_mime": audio_mime, "voice": voice_name}
+        return {
+            "audio_base64": audio_b64,
+            "audio_mime": audio_mime,
+            "voice": voice_name,
+            "speech_text": speech_text,
+        }
 
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"TTS failed: {str(e)}")
-

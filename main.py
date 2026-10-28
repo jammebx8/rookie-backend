@@ -28,8 +28,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-GROQ_API_KEY: str = os.environ.get("GROQ_API_KEY")
-DEEPGRAM_API_KEY: str = os.environ.get("DEEPGRAM_API_KEY", "745155e2a953bd317278905804c8d3f50b2eee83")
+GROQ_API_KEY: str = os.environ.get("GROQ_API_KEY", "")
+DEEPGRAM_API_KEY: str = os.environ.get("DEEPGRAM_API_KEY", "")
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 GROQ_TTS_URL = "https://api.groq.com/openai/v1/audio/speech"
 DEEPGRAM_URL = "https://api.deepgram.com/v1/listen?model=nova-3&language=en&smart_format=true"

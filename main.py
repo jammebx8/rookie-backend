@@ -979,6 +979,25 @@ class SnapTTSRequest(BaseModel):
     voice: Optional[str] = None
 
 
+def clean_solution_latex(text: str) -> str:
+    """Sanitize and standardize LaTeX delimiters for KaTeX rendering."""
+    if not text:
+        return ""
+    # Standardize align environments to KaTeX aligned
+    s = re.sub(r'\\begin\{align\*?\}', r'\\begin{aligned}', text)
+    s = re.sub(r'\\end\{align\*?\}', r'\\end{aligned}', s)
+
+    # Wrap bare multiline environments in $$ if not already delimited
+    s = re.sub(
+        r'(?<!\$)(?<!\$\$)\\begin\{aligned\}([\s\S]*?)\\end\{aligned\}(?!\$)(?!\$\$)',
+        r'$$\n\\begin{aligned}\1\\end{aligned}\n$$',
+        s,
+    )
+    # Ensure bare \ce{...} is wrapped in inline $
+    s = re.sub(r'(?<!\$)(?<!\$\$)\\ce\{([^}]+)\}(?!\$)(?!\$\$)', r'$\\ce{\1}$', s)
+    return s
+
+
 @app.post("/snap-solve/analyze")
 async def snap_analyze(req: SnapAnalyzeRequest):
     """
@@ -1199,6 +1218,7 @@ Question:
 
         reasoning_data = reasoning_resp.json()
         solution_text = reasoning_data.get("choices", [{}])[0].get("message", {}).get("content", "")
+        solution_text = clean_solution_latex(solution_text)
 
         return {
             "is_schoolwork": True,

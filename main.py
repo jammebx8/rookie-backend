@@ -32,12 +32,14 @@ GROQ_API_KEY: str = os.environ.get("GROQ_API_KEY", "")
 DEEPGRAM_API_KEY: str = os.environ.get("DEEPGRAM_API_KEY", "")
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 GROQ_TTS_URL = "https://api.groq.com/openai/v1/audio/speech"
+GROQ_TRANSCRIBE_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 DEEPGRAM_URL = "https://api.deepgram.com/v1/listen?model=nova-3&language=en&smart_format=true"
 
 VISION_MODEL = "qwen/qwen3.8-27b"
 REASONING_MODEL = "openai/gpt-oss-120b"
 DEFAULT_MODEL = "openai/gpt-oss-120b"
 TTS_MODEL = "canopylabs/orpheus-v1-english"
+STT_MODEL = "whisper-large-v3"
 
 app = FastAPI(title="Rookie Backend", version="1.0.0")
 
@@ -659,32 +661,49 @@ async def snap_analyze(req: SnapAnalyzeRequest):
     if options and isinstance(options, dict):
         options_formatted = "\n".join([f"{k}) {v}" for k, v in options.items() if v])
 
-    reasoning_prompt = f"""You are a master academic educator and tutor solving a student's question.
-Provide a crystal-clear, pedagogically sound, and beautifully formatted solution.
+    reasoning_prompt = f"""A student needs help understanding this question.
 
-Subject: {subject}
-Topic: {topic}
+Your job is NOT to write a textbook solution, coaching-module solution, or answer-key explanation.
+Your job is to make the student genuinely understand the question with clear intuition and pristine mathematical reasoning.
+
+EXPLANATION APPROACH
+- First understand the actual mathematical/scientific reasoning yourself.
+- Identify the core concept or trick behind the question.
+- Explain the reasoning naturally from that core idea.
+- Do not repeat the question unnecessarily.
+- Prefer intuition and reasoning over formal textbook definitions.
+- If there is a shortcut or elegant simplification, show it naturally.
+- Keep the explanation concise but complete enough that the student understands WHY the answer is correct.
+- If the question involves steps, structure them cleanly as:
+  ### Step 1
+  ...
+  ### Step 2
+  ...
+
+LATEX ACCURACY
+- Use clean, valid LaTeX for every mathematical expression.
+- Fix missing braces, broken fractions, superscripts, subscripts, Greek letters, and mathematical symbols.
+- ONLY use these two delimiter styles — nothing else:
+  - Inline math:   $...$       (single dollar signs, no space after opening $)
+  - Display math:  $$...$$     (double dollar signs, on their own line with a blank line before and after)
+- NEVER use \\[...\\] or \\(...\\) — these are not supported by the renderer.
+- NEVER use \\begin{{equation}}, \\begin{{align}}, or any LaTeX environment blocks.
+- Every mathematical symbol, variable, fraction, subscript, superscript, Greek letter, or formula MUST be inside $ or $$ delimiters.
+- Do not write bare math like mgsinθ or a_s outside of $ delimiters.
+- Put display equations ($$...$$) on their own line with a blank line before and after.
+
+OUTPUT FORMAT
+- Maximum 4 to 6 concise steps or paragraphs.
+- Clear step-by-step reasoning with LaTeX formulas.
+- End with the clear final result or answer.
+
 Question:
 {question_text}
 
 {f"Options:\n{options_formatted}" if options_formatted else ""}
 {f"Diagram Context: {diagram_desc}" if diagram_desc else ""}
-
-STRICT FORMATTING REQUIREMENTS:
-1. Use Markdown for structure:
-   - Provide a clear bold topic header at the start (e.g. **{subject} — {topic}**).
-   - Include a concise subtitle if relevant.
-   - Include an **Important points:** section with bullet points highlighting key formulas and laws.
-   - Walk through the step-by-step solution clearly without skipping essential intermediate steps.
-   - End with a clearly boxed or highlighted final answer.
-2. LATEX DELIMITERS:
-   - Every single mathematical formula, expression, symbol, or equation MUST be formatted in LaTeX.
-   - Use $...$ for inline math (e.g. $T = \\frac{{PV}}{{nR}}$, $\\Delta U = 0$, $P_1 V_1 = P_2 V_2$).
-   - Use $$...$$ on its own line with a blank line before and after for standalone/display equations.
-   - NEVER use unicode mathematical characters (no ∂, ∫, ∑, θ, π, α, β bare in text) — write $\\partial$, $\\int$, $\\sum$, $\\theta$, $\\pi$, $\\alpha$, $\\beta$.
-   - NEVER use \\[...\\] or \\(...\\) delimiters.
-3. Keep the tone encouraging, clear, and easy for students to follow.
 """
+
 
     try:
         async with httpx.AsyncClient(timeout=120.0) as client:
@@ -730,7 +749,7 @@ STRICT FORMATTING REQUIREMENTS:
 @app.post("/snap-solve/transcribe")
 async def snap_transcribe(req: SnapTranscribeRequest):
     """
-    Transcribes audio stream/recording using Deepgram Nova-3 for ultra-low latency.
+    Transcribes audio recording using whisper-large-v3 on Groq Cloud.
     """
     if not req.audio_base64:
         raise HTTPException(status_code=400, detail="audio_base64 is required")
@@ -744,33 +763,46 @@ async def snap_transcribe(req: SnapTranscribeRequest):
         audio_bytes = base64.b64decode(raw_b64)
         mime = req.mime_type or "audio/webm"
 
+        # Determine file extension from mime type for Groq Whisper
+        ext = "webm"
+        if "wav" in mime:
+            ext = "wav"
+        elif "mp4" in mime or "m4a" in mime:
+            ext = "m4a"
+        elif "ogg" in mime:
+            ext = "ogg"
+        elif "mp3" in mime or "mpeg" in mime:
+            ext = "mp3"
+        filename = f"audio.{ext}"
+
+        files = {"file": (filename, audio_bytes, mime)}
+        data = {
+            "model": STT_MODEL,
+            "language": "en",
+            "response_format": "json"
+        }
+
         async with httpx.AsyncClient(timeout=30.0) as client:
-            dg_resp = await client.post(
-                DEEPGRAM_URL,
-                headers={
-                    "Authorization": f"Token {DEEPGRAM_API_KEY}",
-                    "Content-Type": mime,
-                },
-                content=audio_bytes,
+            resp = await client.post(
+                GROQ_TRANSCRIBE_URL,
+                headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
+                files=files,
+                data=data,
             )
 
-        if dg_resp.status_code != 200:
-            raise HTTPException(status_code=dg_resp.status_code, detail=f"Deepgram Error: {dg_resp.text}")
+        if resp.status_code != 200:
+            raise HTTPException(status_code=resp.status_code, detail=f"Groq Whisper Error: {resp.text}")
 
-        dg_data = dg_resp.json()
-        transcript = (
-            dg_data.get("results", {})
-            .get("channels", [{}])[0]
-            .get("alternatives", [{}])[0]
-            .get("transcript", "")
-        )
+        whisper_data = resp.json()
+        transcript = whisper_data.get("text", "").strip()
 
-        return {"transcript": transcript.strip()}
+        return {"transcript": transcript}
 
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Transcription failed: {str(e)}")
+
 
 
 @app.post("/snap-solve/voice-doubt")
